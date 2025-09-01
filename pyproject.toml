@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mzrt2h5"
+version = "0.1.0"
+authors = [
+    { name="Miao Yu", email="yufreecas@gmail.com" },
+]
+description = "A package to convert mzML files to HDF5 for deep learning."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy",
+    "pandas",
+    "pymzml",
+    "scipy",
+    "h5py",
+    "torch",
+    "tqdm",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[project.urls]
+"Homepage" = "https://github.com/yufree/mzrt2h5"
+"Bug Tracker" = "https://github.com/yufree/mzrt2h5/issues"
