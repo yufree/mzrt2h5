@@ -11,7 +11,7 @@ pip install -r requirements.txt
 pip install .
 ```
 
-## Usage
+## Command-Line Usage
 
 ```python
 from mzrt2h5.processing import save_dataset_as_sparse_h5
@@ -33,3 +33,18 @@ dataset = DynamicSparseH5Dataset(
     target_mz_precision=0.05,
 )
 ```
+
+## Web Interface
+
+This package also includes a simple web interface to perform the conversion.
+
+1.  **Run the Flask app:**
+    ```bash
+    python app/app.py
+    ```
+
+2.  **Access the web interface:**
+    Open your web browser and go to `http://127.0.0.1:5000`.
+
+3.  **Use the form:**
+    Upload your metadata file, select your mzML files directory, set the parameters, and click "Process and Download H5".
