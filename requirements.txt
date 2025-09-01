@@ -6,3 +6,4 @@ h5py
 torch
 tqdm
 Flask
+click

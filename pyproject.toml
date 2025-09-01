@@ -25,7 +25,12 @@ dependencies = [
     "h5py",
     "torch",
     "tqdm",
+    "Flask",
+    "click",
 ]
+
+[project.scripts]
+mzrt2h5 = "mzrt2h5.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
