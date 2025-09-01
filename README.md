@@ -32,6 +32,14 @@ dataset = DynamicSparseH5Dataset(
     target_rt_precision=0.5,
     target_mz_precision=0.05,
 )
+
+# Create a dataset with on-the-fly augmentation for training
+train_dataset = DynamicSparseH5Dataset(
+    h5_path="output.h5",
+    target_rt_precision=0.5,
+    target_mz_precision=0.05,
+    augment=True
+)
 ```
 
 ## Web Interface

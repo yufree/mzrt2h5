@@ -15,6 +15,7 @@ class DynamicSparseH5Dataset(Dataset):
     3. Filtering of samples based on covariate values.
     4. Cropping of the final image to a specific RT/m/z range.
     5. Selection of a specific covariate as the prediction target.
+    6. On-the-fly data augmentation.
     """
     def __init__(self, h5_path, target_rt_precision, target_mz_precision,
                  target_covariate='class',
@@ -22,10 +23,16 @@ class DynamicSparseH5Dataset(Dataset):
                  covariate_filters=None,
                  crop_rt_range=None,
                  crop_mz_range=None,
-                 transform=None):
+                 transform=None,
+                 augment=False, # New augmentation flag
+                 aug_shift_max_rt=0.05, # Max RT shift as fraction of total RT range
+                 aug_shift_max_mz=0.05): # Max m/z shift as fraction of total m/z range
         
         self.h5_path = h5_path
         self.transform = transform
+        self.augment = augment
+        self.aug_shift_max_rt = aug_shift_max_rt
+        self.aug_shift_max_mz = aug_shift_max_mz
         
         # --- 1. Load all data and metadata from HDF5 file ---
         with h5py.File(self.h5_path, 'r') as f:
@@ -46,7 +53,6 @@ class DynamicSparseH5Dataset(Dataset):
                                if key not in ['data', 'rt_indices', 'mz_indices', 'sample_indices', 'shape']}
             
             # Load all mappings from attributes
-            # FIX: Updated to handle the 'mappings' attribute which is a JSON string
             self.mappings = {}
             if 'mappings' in f.attrs:
                 self.mappings = json.loads(f.attrs['mappings'])
@@ -64,7 +70,6 @@ class DynamicSparseH5Dataset(Dataset):
             self.num_total_samples = np.max(self.all_sample_indices) + 1
             
         self.sample_slices = {}
-        # np.searchsorted is a highly efficient way to find the start/end points for each sample
         boundaries = np.searchsorted(self.all_sample_indices, np.arange(self.num_total_samples + 1))
         for i in range(self.num_total_samples):
             self.sample_slices[i] = (boundaries[i], boundaries[i+1])
@@ -110,7 +115,7 @@ class DynamicSparseH5Dataset(Dataset):
             rt_min_idx, rt_max_idx = 0, h
             mz_min_idx, mz_max_idx = 0, w
             if crop_rt_range: rt_min_idx = int((crop_rt_range[0] - self.storage_rt_range[0]) / self.target_rt_precision); rt_max_idx = int((crop_rt_range[1] - self.storage_rt_range[0]) / self.target_rt_precision)
-            if crop_mz_range: mz_min_idx = int((crop_mz_range[0] - self.storage__range[0]) / self.target_mz_precision); mz_max_idx = int((crop_mz_range[1] - self.storage_mz_range[0]) / self.target_mz_precision)
+            if crop_mz_range: mz_min_idx = int((crop_mz_range[0] - self.storage_mz_range[0]) / self.target_mz_precision); mz_max_idx = int((crop_mz_range[1] - self.storage_mz_range[0]) / self.target_mz_precision)
             rt_min_idx = max(0, rt_min_idx); rt_max_idx = min(h, rt_max_idx); mz_min_idx = max(0, mz_min_idx); mz_max_idx = min(w, mz_max_idx)
             self.crop_slice = (slice(rt_min_idx, rt_max_idx), slice(mz_min_idx, mz_max_idx))
             print(f"Cropping enabled. Slicing to RT pixels {rt_min_idx}:{rt_max_idx}, m/z pixels {mz_min_idx}:{mz_max_idx}.")
@@ -136,12 +141,19 @@ class DynamicSparseH5Dataset(Dataset):
         lr_row_indices = np.floor(hr_sparse_matrix.row / self.rt_scaling_factor).astype(int)
         lr_col_indices = np.floor(hr_sparse_matrix.col / self.mz_scaling_factor).astype(int)
 
-        # --- FIX: Clip indices to prevent out-of-bounds error ---
-        # This ensures that calculated indices stay within the valid range [0, dimension_size - 1]
+        # --- C. Apply Augmentation (if enabled) ---
+        if self.augment:
+            h, w = self.target_shape
+            # Apply random shift
+            rt_shift = int(np.random.uniform(-self.aug_shift_max_rt, self.aug_shift_max_rt) * h)
+            mz_shift = int(np.random.uniform(-self.aug_shift_max_mz, self.aug_shift_max_mz) * w)
+            lr_row_indices += rt_shift
+            lr_col_indices += mz_shift
+
+        # --- D. Clip indices to prevent out-of-bounds error ---
         h, w = self.target_shape
         lr_row_indices = np.clip(lr_row_indices, 0, h - 1)
         lr_col_indices = np.clip(lr_col_indices, 0, w - 1)
-        # --------------------------------------------------------
 
         lr_sparse = sparse.coo_matrix(
             (hr_sparse_matrix.data, (lr_row_indices, lr_col_indices)),
@@ -149,11 +161,11 @@ class DynamicSparseH5Dataset(Dataset):
         )
         image_tensor = torch.from_numpy(lr_sparse.toarray()).unsqueeze(0).float()
         
-        # --- C. Apply Spatial Crop ---
+        # --- E. Apply Spatial Crop ---
         if self.crop_slice:
             image_tensor = image_tensor[:, self.crop_slice[0], self.crop_slice[1]]
         
-        # --- D. Get the Target Label ---
+        # --- F. Get the Target Label ---
         labels_dict = {}
         for key, values in self.covariates.items():
             value = values[actual_idx]
