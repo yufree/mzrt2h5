@@ -6,12 +6,11 @@ A Python package to convert mzML files to HDF5 format for deep learning applicat
 
 ## Installation
 
-After installation, a new command `mzrt2h5` will be available in your terminal.
-
 ```bash
-pip install -r requirements.txt
-pip install .
+pip install mzrt2h5
 ```
+
+After installation, a new command `mzrt2h5` will be available in your terminal.
 
 ## CLI Usage
 
