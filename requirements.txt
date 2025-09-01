@@ -7,3 +7,4 @@ torch
 tqdm
 Flask
 click
+matplotlib

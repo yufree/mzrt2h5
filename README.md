@@ -20,7 +20,7 @@ This is the most straightforward way to use the package. After installation, you
 **Example:**
 
 ```bash
-mzrt2h5 \
+mzrt2h5 process \
     /path/to/your/mzml_folder/ \
     /path/to/your/output.h5 \
     --metadata-csv-path /path/to/your/metadata.csv \
@@ -37,6 +37,7 @@ Use `mzrt2h5 --help` to see all available options.
 ```python
 from mzrt2h5.processing import save_dataset_as_sparse_h5
 from mzrt2h5.dataset import DynamicSparseH5Dataset
+from mzrt2h5.visualization import plot_sample_image
 
 # Process mzML files and save to HDF5
 save_dataset_as_sparse_h5(
@@ -65,7 +66,33 @@ train_dataset = DynamicSparseH5Dataset(
     aug_rt_shift_s=30,
     aug_mz_shift_ppm=5
 )
+
+# Plot a sample image from the HDF5 file
+plot_sample_image(
+    h5_path="output.h5",
+    sample_id="Sample_A", # Or an integer index like 0
+    target_rt_precision=0.5,
+    target_mz_precision=0.05,
+    output_path="sample_A_plot.png" # Saves to file, remove to display interactively
+)
 ```
+
+## Visualization
+
+To visualize a mass spectrometry image from your HDF5 file, use the `mzrt2h5 plot` command:
+
+```bash
+mzrt2h5 plot \
+    /path/to/your/output.h5 \
+    "Sample_A" \
+    --rt-precision 0.5 \
+    --mz-precision 0.05 \
+    --output-path sample_A_plot.png
+```
+
+**Options:**
+
+Use `mzrt2h5 plot --help` to see all available options for plotting.
 
 ## Web Interface
 

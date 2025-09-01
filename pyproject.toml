@@ -27,6 +27,7 @@ dependencies = [
     "tqdm",
     "Flask",
     "click",
+    "matplotlib",
 ]
 
 [project.scripts]
