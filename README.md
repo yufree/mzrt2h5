@@ -34,11 +34,15 @@ dataset = DynamicSparseH5Dataset(
 )
 
 # Create a dataset with on-the-fly augmentation for training
+# with a random retention time shift of +/- 30 seconds
+# and a random m/z shift of +/- 5 ppm.
 train_dataset = DynamicSparseH5Dataset(
     h5_path="output.h5",
     target_rt_precision=0.5,
     target_mz_precision=0.05,
-    augment=True
+    augment=True,
+    aug_rt_shift_s=30,
+    aug_mz_shift_ppm=5
 )
 ```
 

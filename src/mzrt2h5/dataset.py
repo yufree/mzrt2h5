@@ -15,7 +15,7 @@ class DynamicSparseH5Dataset(Dataset):
     3. Filtering of samples based on covariate values.
     4. Cropping of the final image to a specific RT/m/z range.
     5. Selection of a specific covariate as the prediction target.
-    6. On-the-fly data augmentation.
+    6. On-the-fly data augmentation with physically meaningful units.
     """
     def __init__(self, h5_path, target_rt_precision, target_mz_precision,
                  target_covariate='class',
@@ -24,15 +24,15 @@ class DynamicSparseH5Dataset(Dataset):
                  crop_rt_range=None,
                  crop_mz_range=None,
                  transform=None,
-                 augment=False, # New augmentation flag
-                 aug_shift_max_rt=0.05, # Max RT shift as fraction of total RT range
-                 aug_shift_max_mz=0.05): # Max m/z shift as fraction of total m/z range
+                 augment=False,
+                 aug_rt_shift_s=0.0,  # Max RT shift in seconds
+                 aug_mz_shift_ppm=0.0): # Max m/z shift in PPM
         
         self.h5_path = h5_path
         self.transform = transform
         self.augment = augment
-        self.aug_shift_max_rt = aug_shift_max_rt
-        self.aug_shift_max_mz = aug_shift_max_mz
+        self.aug_rt_shift_s = aug_rt_shift_s
+        self.aug_mz_shift_ppm = aug_mz_shift_ppm
         
         # --- 1. Load all data and metadata from HDF5 file ---
         with h5py.File(self.h5_path, 'r') as f:
@@ -143,12 +143,17 @@ class DynamicSparseH5Dataset(Dataset):
 
         # --- C. Apply Augmentation (if enabled) ---
         if self.augment:
-            h, w = self.target_shape
-            # Apply random shift
-            rt_shift = int(np.random.uniform(-self.aug_shift_max_rt, self.aug_shift_max_rt) * h)
-            mz_shift = int(np.random.uniform(-self.aug_shift_max_mz, self.aug_shift_max_mz) * w)
-            lr_row_indices += rt_shift
-            lr_col_indices += mz_shift
+            # RT shift
+            rt_shift_s = np.random.uniform(-self.aug_rt_shift_s, self.aug_rt_shift_s)
+            rt_shift_pixels = int(rt_shift_s / self.target_rt_precision)
+            lr_row_indices += rt_shift_pixels
+
+            # m/z shift (approximated)
+            mz_shift_ppm = np.random.uniform(-self.aug_mz_shift_ppm, self.aug_mz_shift_ppm)
+            center_mz = np.mean(self.storage_mz_range)
+            mz_delta = center_mz * mz_shift_ppm * 1e-6
+            mz_shift_pixels = int(mz_delta / self.target_mz_precision)
+            lr_col_indices += mz_shift_pixels
 
         # --- D. Clip indices to prevent out-of-bounds error ---
         h, w = self.target_shape
