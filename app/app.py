@@ -7,14 +7,31 @@ import json
 from threading import Lock
 
 # Add the src directory to Python path to use local development version
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+current_file_dir = os.path.dirname(__file__)
+src_path = os.path.abspath(os.path.join(current_file_dir, '..', 'src'))
+sys.path.insert(0, src_path)
 
 from flask import Flask, request, render_template, send_file, after_this_request, Response
 from werkzeug.utils import secure_filename
 from mzrt2h5 import save_dataset_as_sparse_h5, save_single_mzml_as_sparse_h5
 
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = 'uploads'
+# Log the src path after app is created
+app.logger.info(f"Added src directory to Python path: {src_path}")
+app.logger.info(f"Local mzrt2h5 module exists at: {os.path.exists(os.path.join(src_path, 'mzrt2h5'))}")
+# Use absolute path for uploads to avoid working directory issues
+current_file_dir = os.path.dirname(__file__)
+app.logger.info(f"Current file directory (__file__): {__file__}")
+app.logger.info(f"os.path.dirname(__file__): {current_file_dir}")
+
+app.config['UPLOAD_FOLDER'] = os.path.join(current_file_dir, 'uploads')
+app.logger.info(f"UPLOAD_FOLDER set to: {app.config['UPLOAD_FOLDER']}")
+app.logger.info(f"UPLOAD_FOLDER exists: {os.path.exists(app.config['UPLOAD_FOLDER'])}")
+
+# Also log the absolute path for debugging
+app.config['UPLOAD_FOLDER'] = os.path.abspath(app.config['UPLOAD_FOLDER'])
+app.logger.info(f"UPLOAD_FOLDER (absolute): {app.config['UPLOAD_FOLDER']}")
+
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024 * 1024  # 16 GB limit
 
 # In-memory storage for progress updates
@@ -43,17 +60,32 @@ def progress_stream(task_id):
 def download_file(task_id):
     with progress_lock:
         if task_id not in progress_updates:
-            return "Task not found or not completed", 404
+            return f"Task not found: {task_id}", 404
         
         progress = progress_updates[task_id]
+        app.logger.info(f"Download requested for task {task_id}")
+        app.logger.info(f"Current progress: {progress}")
+        
         if progress.get('progress') != 100 or progress.get('status') != 'completed':
-            return "File not ready for download", 400
+            return f"File not ready for download (status: {progress.get('status')}, progress: {progress.get('progress')}%)", 400
         
         output_path = progress['output_path']
         output_filename = progress['output_filename']
     
+    app.logger.info(f"Checking if file exists: {output_path}")
+    app.logger.info(f"File exists: {os.path.exists(output_path)}")
+    
+    if os.path.exists(output_path):
+        app.logger.info(f"File size: {os.path.getsize(output_path)} bytes")
+    else:
+        # Check if directory exists
+        directory = os.path.dirname(output_path)
+        app.logger.info(f"Directory exists: {os.path.exists(directory)}")
+        if os.path.exists(directory):
+            app.logger.info(f"Directory contents: {os.listdir(directory)}")
+    
     if not os.path.exists(output_path):
-        return "File not found", 404
+        return f"File not found at {output_path}", 404
     
     @after_this_request
     def cleanup(response):
@@ -91,8 +123,8 @@ def process_files():
         metadata_file = request.files.get('metadata')
         mzml_files = request.files.getlist('mzml_files')
         
-        rt_precision = float(request.form.get('rt_precision', 0.1))
-        mz_precision = float(request.form.get('mz_precision', 0.01))
+        rt_precision = float(request.form.get('rt_precision', 1))
+        mz_precision = float(request.form.get('mz_precision', 0.001))
         sample_id_col = request.form.get('sample_id_col', 'Sample Name')
 
         if not metadata_file or not mzml_files:
@@ -170,8 +202,8 @@ def process_single_file():
 
         # --- File and Parameter Handling ---
         mzml_file = request.files.get('mzml_file')
-        rt_precision = float(request.form.get('rt_precision', 0.1))
-        mz_precision = float(request.form.get('mz_precision', 0.01))
+        rt_precision = float(request.form.get('rt_precision', 1))
+        mz_precision = float(request.form.get('mz_precision', 0.001))
 
         if not mzml_file:
             return "Missing mzML file", 400
@@ -181,10 +213,17 @@ def process_single_file():
         mzml_file.save(mzml_path)
 
         # --- Processing ---
-        output_filename = f"{mzml_filename.replace('.mzML', '')}_output.h5"
+        # Use os.path.splitext for more robust extension handling
+        base_name, ext = os.path.splitext(mzml_filename)
+        app.logger.info(f"Input filename: {mzml_filename}")
+        app.logger.info(f"Extension: {ext}")
+        app.logger.info(f"Base name: {base_name}")
+        
+        output_filename = f"{base_name}_output.h5"
         output_path = os.path.join(session_path, output_filename)
         app.logger.info(f"Processing file: {mzml_path}")
         app.logger.info(f"Output will be saved to: {output_path}")
+        app.logger.info(f"Output filename: {output_filename}")
 
         # Create progress callback
         def progress_callback(progress):
@@ -212,6 +251,18 @@ def process_single_file():
         import threading
         def process_task():
             try:
+                app.logger.info(f"Starting processing thread for task {task_id}")
+                app.logger.info(f"mzml_path: {mzml_path}, exists: {os.path.exists(mzml_path)}")
+                app.logger.info(f"output_path: {output_path}, directory exists: {os.path.exists(session_path)}")
+                
+                # Debug paths before processing
+                app.logger.info(f"DEBUG - mzml_path: {mzml_path}")
+                app.logger.info(f"DEBUG - output_path: {output_path}")
+                app.logger.info(f"DEBUG - app.config['UPLOAD_FOLDER']: {app.config['UPLOAD_FOLDER']}")
+                app.logger.info(f"DEBUG - os.getcwd(): {os.getcwd()}")
+                app.logger.info(f"DEBUG - __file__: {__file__}")
+                app.logger.info(f"DEBUG - os.path.dirname(__file__): {os.path.dirname(__file__)}")
+                
                 save_single_mzml_as_sparse_h5(
                     mzml_file_path=mzml_path,
                     save_path=output_path,
@@ -219,7 +270,27 @@ def process_single_file():
                     mz_precision=mz_precision,
                     progress_callback=progress_callback
                 )
+                
+                # Verify file was created
+                if os.path.exists(output_path):
+                    app.logger.info(f"HDF5 file created successfully at {output_path}")
+                    app.logger.info(f"File size: {os.path.getsize(output_path)} bytes")
+                else:
+                    app.logger.error(f"ERROR: HDF5 file was NOT created at {output_path}")
+                    with progress_lock:
+                        progress_updates[task_id] = {
+                            **progress_updates.get(task_id, {}),
+                            'step': 'error',
+                            'status': 'error',
+                            'message': 'Processing completed but HDF5 file was not created',
+                            'progress': -1,
+                            'error': f'File not found at {output_path}'
+                        }
             except Exception as e:
+                app.logger.error(f"ERROR in processing thread: {str(e)}")
+                import traceback
+                app.logger.error(traceback.format_exc())
+                
                 with progress_lock:
                     progress_updates[task_id] = {
                         **progress_updates.get(task_id, {}),
@@ -237,4 +308,4 @@ def process_single_file():
 
 if __name__ == '__main__':
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-    app.run(debug=True)
+    app.run(debug=True, port=5002)

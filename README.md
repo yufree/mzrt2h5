@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A Python package to convert mzML files to HDF5 format for deep learning applications.
+A Python package to convert mzML files to HDF5 format for deep learning applications. Version 0.1.4
 
 ## Installation
 
@@ -126,6 +126,17 @@ mzrt2h5 plot \
 
 Use `mzrt2h5 plot --help` to see all available options for plotting.
 
+## Changelog
+
+### Version 0.1.4
+
+- **Fixed** path resolution issues in the web interface to ensure HDF5 files are properly located
+- **Improved** error handling in HDF5 file writing
+- **Updated** default precision values in the web interface (rt_precision: 1.0, mz_precision: 0.001)
+- **Enhanced** progress tracking and debugging in both CLI and web interface
+- **Added** better file extension handling for output filenames
+- **Fixed** version consistency across all package files
+
 ## Web Interface
 
 This package includes a web interface with real-time progress indicators for both single-file and batch processing.
@@ -136,7 +147,7 @@ This package includes a web interface with real-time progress indicators for bot
     ```
 
 2.  **Access the web interface:**
-    Open your web browser and go to `http://127.0.0.1:5000`.
+    Open your web browser and go to `http://127.0.0.1:5002`.
 
 3.  **Use the interface:**
     The web interface has two modes:

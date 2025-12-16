@@ -332,28 +332,37 @@ def save_single_mzml_as_sparse_h5(mzml_file_path, save_path, rt_precision, mz_pr
     print(f"  - m/z Range: {final_mz_range[0]:.4f} to {final_mz_range[1]:.4f}")
     print(f"  - Matrix Shape: {final_shape}\n")
 
-    with h5py.File(save_path, 'w') as f:
+    try:
+        with h5py.File(save_path, 'w') as f:
+            if progress_callback:
+                progress_callback({'step': 'writing_hdf5', 'status': 'in_progress', 'message': 'Writing to HDF5 file', 'progress': 70})
+            
+            intensities = sparse_matrix.data
+            rt_indices = sparse_matrix.row
+            mz_indices = sparse_matrix.col
+
+            f.create_dataset('data', data=intensities, compression='gzip')
+            f.create_dataset('rt_indices', data=rt_indices, compression='gzip')
+            f.create_dataset('mz_indices', data=mz_indices, compression='gzip')
+            f.create_dataset('sample_name', data=np.array([sample_name], dtype='S'))
+            f.create_dataset('shape', data=final_shape)
+
+            f.attrs['rt_precision'] = rt_precision
+            f.attrs['mz_precision'] = mz_precision
+            f.attrs['rt_range_min'] = final_rt_range[0]
+            f.attrs['rt_range_max'] = final_rt_range[1]
+            f.attrs['mz_range_min'] = final_mz_range[0]
+            f.attrs['mz_range_max'] = final_mz_range[1]
+            
+    except Exception as e:
+        print(f"ERROR writing HDF5 file: {e}")
+
+    # Only report completion if the file was actually created
+    if os.path.exists(save_path):
         if progress_callback:
-            progress_callback({'step': 'writing_hdf5', 'status': 'in_progress', 'message': 'Writing to HDF5 file', 'progress': 70})
-        intensities = sparse_matrix.data
-        rt_indices = sparse_matrix.row
-        mz_indices = sparse_matrix.col
-
-        f.create_dataset('data', data=intensities, compression='gzip')
-        f.create_dataset('rt_indices', data=rt_indices, compression='gzip')
-        f.create_dataset('mz_indices', data=mz_indices, compression='gzip')
-
-        f.create_dataset('sample_name', data=np.array([sample_name], dtype='S'))
-
-        f.create_dataset('shape', data=final_shape)
-
-        f.attrs['rt_precision'] = rt_precision
-        f.attrs['mz_precision'] = mz_precision
-        f.attrs['rt_range_min'] = final_rt_range[0]
-        f.attrs['rt_range_max'] = final_rt_range[1]
-        f.attrs['mz_range_min'] = final_mz_range[0]
-        f.attrs['mz_range_max'] = final_mz_range[1]
-
-    if progress_callback:
-        progress_callback({'step': 'completed', 'status': 'completed', 'message': 'Processing completed', 'progress': 100})
-    print(f"Done. HDF5 file saved successfully to {save_path}")
+            progress_callback({'step': 'completed', 'status': 'completed', 'message': 'Processing completed', 'progress': 100})
+        print(f"Done. HDF5 file saved successfully to {save_path}")
+    else:
+        if progress_callback:
+            progress_callback({'step': 'error', 'status': 'error', 'message': 'Failed to create HDF5 file', 'progress': -1})
+        print(f"ERROR: HDF5 file was not created at {save_path}")
