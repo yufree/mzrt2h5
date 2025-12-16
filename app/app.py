@@ -1,6 +1,11 @@
 import os
+import sys
 import uuid
 import shutil
+
+# Add the src directory to Python path to use local development version
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
 from flask import Flask, request, render_template, send_from_directory, after_this_request
 from werkzeug.utils import secure_filename
 from mzrt2h5 import save_dataset_as_sparse_h5, save_single_mzml_as_sparse_h5
