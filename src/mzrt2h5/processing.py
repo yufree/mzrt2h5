@@ -264,3 +264,61 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
         f.attrs['mz_range_max'] = final_mz_range[1]
         
     print(f"Done. HDF5 file saved successfully to {save_path}")
+
+def save_single_mzml_as_sparse_h5(mzml_file_path, save_path, rt_precision, mz_precision,
+                                   mz_range=None, rt_range=None, sample_name=None):
+    """
+    Processes a single mzML file and saves it as a sparse HDF5 file.
+
+    Args:
+        mzml_file_path (str): Path to the .mzML file to process.
+        save_path (str): Path to save the output .h5 file.
+        rt_precision (float): Bin size for the retention time axis.
+        mz_precision (float): Bin size for the m/z axis.
+        mz_range (tuple, optional): Fixed (min, max) m/z range.
+        rt_range (tuple, optional): Fixed (min, max) RT range.
+        sample_name (str, optional): Name to use for the sample. If None, uses the filename.
+    """
+    if not os.path.exists(mzml_file_path):
+        raise FileNotFoundError(f"mzML file not found at {mzml_file_path}")
+
+    if sample_name is None:
+        sample_name = os.path.basename(mzml_file_path).replace('.mzML', '')
+
+    print(f"Processing single mzML file: {mzml_file_path}")
+    print(f"Sample name: {sample_name}")
+
+    sparse_matrix, used_rt_range, used_mz_range = process_mzml_to_sparse(
+        mzml_file_path, rt_precision, mz_precision, mz_range, rt_range
+    )
+
+    final_rt_range = rt_range if rt_range is not None else used_rt_range
+    final_mz_range = mz_range if mz_range is not None else used_mz_range
+    final_shape = sparse_matrix.shape
+
+    print(f"\nData ranges and shape:")
+    print(f"  - RT Range: {final_rt_range[0]:.2f} to {final_rt_range[1]:.2f} s")
+    print(f"  - m/z Range: {final_mz_range[0]:.4f} to {final_mz_range[1]:.4f}")
+    print(f"  - Matrix Shape: {final_shape}\n")
+
+    with h5py.File(save_path, 'w') as f:
+        intensities = sparse_matrix.data
+        rt_indices = sparse_matrix.row
+        mz_indices = sparse_matrix.col
+
+        f.create_dataset('data', data=intensities, compression='gzip')
+        f.create_dataset('rt_indices', data=rt_indices, compression='gzip')
+        f.create_dataset('mz_indices', data=mz_indices, compression='gzip')
+
+        f.create_dataset('sample_name', data=np.array([sample_name], dtype='S'))
+
+        f.create_dataset('shape', data=final_shape)
+
+        f.attrs['rt_precision'] = rt_precision
+        f.attrs['mz_precision'] = mz_precision
+        f.attrs['rt_range_min'] = final_rt_range[0]
+        f.attrs['rt_range_max'] = final_rt_range[1]
+        f.attrs['mz_range_min'] = final_mz_range[0]
+        f.attrs['mz_range_max'] = final_mz_range[1]
+
+    print(f"Done. HDF5 file saved successfully to {save_path}")

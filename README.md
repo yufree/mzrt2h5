@@ -16,6 +16,8 @@ After installation, a new command `mzrt2h5` will be available in your terminal.
 
 This is the most straightforward way to use the package. After installation, you can call the `mzrt2h5` command from your terminal.
 
+### Batch Processing (Multiple Files)
+
 **Example:**
 
 ```bash
@@ -27,11 +29,27 @@ mzrt2h5 process \
     --mz-precision 0.01
 ```
 
+### Single File Conversion
+
+To convert a single mzML file without needing metadata:
+
+**Example:**
+
+```bash
+mzrt2h5 process-single \
+    /path/to/your/file.mzML \
+    /path/to/your/output.h5 \
+    --rt-precision 0.1 \
+    --mz-precision 0.01
+```
+
 **Options:**
 
 Use `mzrt2h5 --help` to see all available options.
 
 ## Python Usage
+
+### Batch Processing (Multiple Files)
 
 ```python
 from mzrt2h5.processing import save_dataset_as_sparse_h5
@@ -46,6 +64,21 @@ save_dataset_as_sparse_h5(
     mz_precision=0.01,
     metadata_csv_path="path/to/your/metadata.csv",
 )
+```
+
+### Single File Conversion
+
+```python
+from mzrt2h5.processing import save_single_mzml_as_sparse_h5
+
+# Process a single mzML file and save to HDF5
+save_single_mzml_as_sparse_h5(
+    mzml_file_path="path/to/your/file.mzML",
+    save_path="output.h5",
+    rt_precision=0.1,
+    mz_precision=0.01,
+)
+```
 
 # Create a PyTorch dataset
 dataset = DynamicSparseH5Dataset(
@@ -105,5 +138,9 @@ This package also includes a simple web interface to perform the conversion.
 2.  **Access the web interface:**
     Open your web browser and go to `http://127.0.0.1:5000`.
 
-3.  **Use the form:**
-    Upload your metadata file, select your mzML files directory, set the parameters, and click "Process and Download H5".
+3.  **Use the interface:**
+    The web interface has two modes:
+    - **Batch Processing**: Upload a metadata file and multiple mzML files for processing
+    - **Single File**: Upload a single mzML file without needing metadata
+
+    Select the appropriate tab, set the parameters, and click the "Process and Download H5" button.

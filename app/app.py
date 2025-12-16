@@ -3,7 +3,7 @@ import uuid
 import shutil
 from flask import Flask, request, render_template, send_from_directory, after_this_request
 from werkzeug.utils import secure_filename
-from mzrt2h5 import save_dataset_as_sparse_h5
+from mzrt2h5 import save_dataset_as_sparse_h5, save_single_mzml_as_sparse_h5
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -51,6 +51,53 @@ def process_files():
                 mz_precision=mz_precision,
                 metadata_csv_path=metadata_path,
                 sample_id_col=sample_id_col
+            )
+        except Exception as e:
+            # Clean up the directory before returning the error
+            shutil.rmtree(session_path)
+            return f"An error occurred during processing: {e}", 500
+
+        # --- Cleanup and File Sending ---
+        @after_this_request
+        def cleanup(response):
+            try:
+                shutil.rmtree(session_path)
+            except Exception as e:
+                app.logger.error(f"Error cleaning up directory {session_path}: {e}")
+            return response
+
+        return send_from_directory(session_path, output_filename, as_attachment=True)
+
+@app.route('/process_single', methods=['POST'])
+def process_single_file():
+    if request.method == 'POST':
+        # Create a unique temporary directory for this request
+        session_id = str(uuid.uuid4())
+        session_path = os.path.join(app.config['UPLOAD_FOLDER'], session_id)
+        os.makedirs(session_path, exist_ok=True)
+
+        # --- File and Parameter Handling ---
+        mzml_file = request.files.get('mzml_file')
+        rt_precision = float(request.form.get('rt_precision', 0.1))
+        mz_precision = float(request.form.get('mz_precision', 0.01))
+
+        if not mzml_file:
+            return "Missing mzML file", 400
+
+        mzml_filename = secure_filename(mzml_file.filename)
+        mzml_path = os.path.join(session_path, mzml_filename)
+        mzml_file.save(mzml_path)
+
+        # --- Processing ---
+        output_filename = f"{mzml_filename.replace('.mzML', '')}_output.h5"
+        output_path = os.path.join(session_path, output_filename)
+
+        try:
+            save_single_mzml_as_sparse_h5(
+                mzml_file_path=mzml_path,
+                save_path=output_path,
+                rt_precision=rt_precision,
+                mz_precision=mz_precision
             )
         except Exception as e:
             # Clean up the directory before returning the error
