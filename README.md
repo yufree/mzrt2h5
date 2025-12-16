@@ -128,7 +128,7 @@ Use `mzrt2h5 plot --help` to see all available options for plotting.
 
 ## Web Interface
 
-This package also includes a simple web interface to perform the conversion.
+This package includes a web interface with real-time progress indicators for both single-file and batch processing.
 
 1.  **Run the Flask app:**
     ```bash
@@ -143,4 +143,14 @@ This package also includes a simple web interface to perform the conversion.
     - **Batch Processing**: Upload a metadata file and multiple mzML files for processing
     - **Single File**: Upload a single mzML file without needing metadata
 
-    Select the appropriate tab, set the parameters, and click the "Process and Download H5" button.
+    Select the appropriate tab, set the parameters, and click the "Process" button.
+
+4.  **Monitor progress:**
+    - Real-time progress bar shows processing status from 0% to 100%
+    - Detailed status messages indicate current processing stage
+    - Progress updates automatically without page refresh
+
+5.  **Download results:**
+    - Download button appears automatically when processing completes
+    - Click to download the generated HDF5 file
+    - Temporary files are automatically cleaned up after download

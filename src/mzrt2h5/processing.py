@@ -134,7 +134,8 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
                               metadata_csv_path,      
                               sample_id_col='Sample Name',
                               separator=',',
-                              mz_range=None, rt_range=None):
+                              mz_range=None, rt_range=None,
+                              progress_callback=None):
     """
     Processes a folder of mzML files and saves them as a single, consolidated
     sparse HDF5 file with associated metadata.
@@ -149,11 +150,14 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
         separator (str): Separator for the metadata file (e.g., ',').
         mz_range (tuple, optional): Fixed (min, max) m/z range.
         rt_range (tuple, optional): Fixed (min, max) RT range.
+        progress_callback (function, optional): Callback function to report progress updates.
     """
     
     # Load metadata from the provided CSV file
     metadata_lookup = load_metadata_from_file(metadata_csv_path, sample_id_col, separator)
     print(f"Successfully loaded {len(metadata_lookup)} metadata records from {metadata_csv_path}.")
+    if progress_callback:
+        progress_callback({'step': 'loading_metadata', 'status': 'completed', 'message': 'Loaded metadata', 'progress': 10})
 
     files_to_process = []
     all_covariates = []
@@ -172,6 +176,9 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
 
     if not files_to_process:
         raise ValueError("No matching mzML files found for the metadata provided.")
+
+    if progress_callback:
+        progress_callback({'step': 'matching_files', 'status': 'completed', 'message': f'Matched {len(files_to_process)} files', 'progress': 20})
 
     # Determine the final data ranges and shape.
     # This uses the first file as a template. Be aware that data outside these
@@ -202,8 +209,23 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
         dset_mz = f.create_dataset('mz_indices', shape=(0,), maxshape=(None,), dtype=np.int32, compression='gzip')
         dset_sample = f.create_dataset('sample_indices', shape=(0,), maxshape=(None,), dtype=np.int32, compression='gzip')
 
+        if progress_callback:
+            progress_callback({'step': 'initializing_hdf5', 'status': 'completed', 'message': 'Initialized HDF5 file', 'progress': 30})
+
         # Main loop to process each file and append its data to the HDF5 datasets
+        total_files = len(files_to_process)
         for i, f_path in enumerate(tqdm(files_to_process, desc="Processing & Writing")):
+            if progress_callback:
+                progress = 30 + int((i / total_files) * 50)
+                progress_callback({
+                    'step': 'processing_files', 
+                    'status': 'in_progress', 
+                    'message': f'Processing file {i+1}/{total_files}: {os.path.basename(f_path)}', 
+                    'progress': progress,
+                    'file_index': i+1,
+                    'total_files': total_files
+                })
+            
             if i == 0 and first_matrix is not None:
                 sparse_matrix = first_matrix
             else:
@@ -263,10 +285,14 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
         f.attrs['mz_range_min'] = final_mz_range[0]
         f.attrs['mz_range_max'] = final_mz_range[1]
         
+    if progress_callback:
+        progress_callback({'step': 'writing_hdf5', 'status': 'completed', 'message': 'Writing to HDF5 file completed', 'progress': 90})
+        progress_callback({'step': 'completed', 'status': 'completed', 'message': 'Processing completed', 'progress': 100})
     print(f"Done. HDF5 file saved successfully to {save_path}")
 
 def save_single_mzml_as_sparse_h5(mzml_file_path, save_path, rt_precision, mz_precision,
-                                   mz_range=None, rt_range=None, sample_name=None):
+                                   mz_range=None, rt_range=None, sample_name=None,
+                                   progress_callback=None):
     """
     Processes a single mzML file and saves it as a sparse HDF5 file.
 
@@ -278,6 +304,7 @@ def save_single_mzml_as_sparse_h5(mzml_file_path, save_path, rt_precision, mz_pr
         mz_range (tuple, optional): Fixed (min, max) m/z range.
         rt_range (tuple, optional): Fixed (min, max) RT range.
         sample_name (str, optional): Name to use for the sample. If None, uses the filename.
+        progress_callback (function, optional): Callback function to report progress updates.
     """
     if not os.path.exists(mzml_file_path):
         raise FileNotFoundError(f"mzML file not found at {mzml_file_path}")
@@ -287,10 +314,14 @@ def save_single_mzml_as_sparse_h5(mzml_file_path, save_path, rt_precision, mz_pr
 
     print(f"Processing single mzML file: {mzml_file_path}")
     print(f"Sample name: {sample_name}")
+    if progress_callback:
+        progress_callback({'step': 'initializing', 'status': 'in_progress', 'message': 'Processing single file', 'progress': 10})
 
     sparse_matrix, used_rt_range, used_mz_range = process_mzml_to_sparse(
         mzml_file_path, rt_precision, mz_precision, mz_range, rt_range
     )
+    if progress_callback:
+        progress_callback({'step': 'processing_file', 'status': 'completed', 'message': 'Processed file data', 'progress': 50})
 
     final_rt_range = rt_range if rt_range is not None else used_rt_range
     final_mz_range = mz_range if mz_range is not None else used_mz_range
@@ -302,6 +333,8 @@ def save_single_mzml_as_sparse_h5(mzml_file_path, save_path, rt_precision, mz_pr
     print(f"  - Matrix Shape: {final_shape}\n")
 
     with h5py.File(save_path, 'w') as f:
+        if progress_callback:
+            progress_callback({'step': 'writing_hdf5', 'status': 'in_progress', 'message': 'Writing to HDF5 file', 'progress': 70})
         intensities = sparse_matrix.data
         rt_indices = sparse_matrix.row
         mz_indices = sparse_matrix.col
@@ -321,4 +354,6 @@ def save_single_mzml_as_sparse_h5(mzml_file_path, save_path, rt_precision, mz_pr
         f.attrs['mz_range_min'] = final_mz_range[0]
         f.attrs['mz_range_max'] = final_mz_range[1]
 
+    if progress_callback:
+        progress_callback({'step': 'completed', 'status': 'completed', 'message': 'Processing completed', 'progress': 100})
     print(f"Done. HDF5 file saved successfully to {save_path}")

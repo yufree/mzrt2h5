@@ -9,6 +9,10 @@
         body { padding: 2rem; }
         .container { max-width: 800px; }
         .form-label { font-weight: 500; }
+        .progress-container { margin-top: 2rem; display: none; }
+        .progress { margin-bottom: 1rem; }
+        .spinner-border { margin-right: 0.5rem; }
+        .download-btn { display: none; }
     </style>
 </head>
 <body>
@@ -28,7 +32,7 @@
         <div class="tab-content" id="myTabContent">
             <!-- Batch Processing Tab -->
             <div class="tab-pane fade show active" id="batch" role="tabpanel" aria-labelledby="batch-tab">
-                <form action="/process" method="post" enctype="multipart/form-data">
+                <form id="batch-form" enctype="multipart/form-data">
                     <div class="mb-3">
                         <label for="metadata" class="form-label">1. Metadata File (CSV or TSV)</label>
                         <input class="form-control" type="file" id="metadata" name="metadata" required>
@@ -62,11 +66,28 @@
                         <button type="submit" class="btn btn-primary btn-lg">Process Batch and Download H5</button>
                     </div>
                 </form>
+
+                <!-- Progress Display -->
+                <div id="batch-progress" class="progress-container">
+                    <div class="alert alert-info" role="alert">
+                        <div class="d-flex align-items-center">
+                            <div class="spinner-border" role="status"></div>
+                            <span id="batch-status">Processing in progress...</span>
+                        </div>
+                    </div>
+                    <div class="progress">
+                        <div id="batch-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" style="width: 0%"></div>
+                    </div>
+                    <div id="batch-progress-message" class="text-muted small"></div>
+                    <div class="d-grid mt-3">
+                        <a id="batch-download-btn" href="#" class="btn btn-primary btn-lg download-btn">Download Results</a>
+                    </div>
+                </div>
             </div>
 
             <!-- Single File Tab -->
             <div class="tab-pane fade" id="single" role="tabpanel" aria-labelledby="single-tab">
-                <form action="/process_single" method="post" enctype="multipart/form-data">
+                <form id="single-form" enctype="multipart/form-data">
                     <div class="mb-3">
                         <label for="mzml_file" class="form-label">mzML File</label>
                         <input class="form-control" type="file" id="mzml_file" name="mzml_file" required>
@@ -91,10 +112,150 @@
                         <button type="submit" class="btn btn-success btn-lg">Process Single File and Download H5</button>
                     </div>
                 </form>
+
+                <!-- Progress Display -->
+                <div id="single-progress" class="progress-container">
+                    <div class="alert alert-info" role="alert">
+                        <div class="d-flex align-items-center">
+                            <div class="spinner-border" role="status"></div>
+                            <span id="single-status">Processing in progress...</span>
+                        </div>
+                    </div>
+                    <div class="progress">
+                        <div id="single-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" style="width: 0%"></div>
+                    </div>
+                    <div id="single-progress-message" class="text-muted small"></div>
+                    <div class="d-grid mt-3">
+                        <a id="single-download-btn" href="#" class="btn btn-success btn-lg download-btn">Download Results</a>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Common function to handle form submission and progress tracking
+        function setupForm(formId, actionUrl, progressContainerId, statusId, progressBarId, progressMessageId, downloadBtnId) {
+            const form = document.getElementById(formId);
+            const progressContainer = document.getElementById(progressContainerId);
+            const statusElement = document.getElementById(statusId);
+            const progressBar = document.getElementById(progressBarId);
+            const progressMessage = document.getElementById(progressMessageId);
+            const downloadBtn = document.getElementById(downloadBtnId);
+
+            form.addEventListener('submit', (e) => {
+                e.preventDefault();
+                
+                // Show progress container
+                progressContainer.style.display = 'block';
+                statusElement.textContent = 'Uploading files...';
+                progressBar.style.width = '0%';
+                progressBar.setAttribute('aria-valuenow', '0');
+                progressMessage.textContent = '';
+                downloadBtn.style.display = 'none';
+
+                // Create FormData
+                const formData = new FormData(form);
+
+                // Submit form
+                fetch(actionUrl, {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.task_id) {
+                        // Start listening for progress updates
+                        listenForProgress(data.task_id, statusElement, progressBar, progressMessage, downloadBtn);
+                    } else {
+                        statusElement.innerHTML = '<strong>Error:</strong> ' + (data.error || 'Unknown error');
+                        statusElement.closest('.alert').className = 'alert alert-danger';
+                    }
+                })
+                .catch(error => {
+                    statusElement.innerHTML = '<strong>Error:</strong> ' + error.message;
+                    statusElement.closest('.alert').className = 'alert alert-danger';
+                });
+            });
+        }
+
+        // Function to listen for progress updates via SSE
+        function listenForProgress(taskId, statusElement, progressBar, progressMessage, downloadBtn) {
+            const eventSource = new EventSource(`/progress/${taskId}`);
+
+            eventSource.onmessage = (event) => {
+                const progress = JSON.parse(event.data);
+                
+                if (progress.error) {
+                    statusElement.innerHTML = '<strong>Error:</strong> ' + progress.message;
+                    statusElement.closest('.alert').className = 'alert alert-danger';
+                    progressBar.className = 'progress-bar bg-danger';
+                    progressBar.style.width = '100%';
+                    eventSource.close();
+                    return;
+                }
+
+                // Update status and progress
+                statusElement.textContent = progress.message || 'Processing...';
+                
+                if (progress.progress >= 0) {
+                    const progressPercent = Math.min(progress.progress, 100);
+                    progressBar.style.width = `${progressPercent}%`;
+                    progressBar.setAttribute('aria-valuenow', progressPercent);
+                }
+
+                // Update detailed message
+                if (progress.step) {
+                    progressMessage.textContent = `Current step: ${progress.step}`;
+                    if (progress.file_index && progress.total_files) {
+                        progressMessage.textContent += ` (File ${progress.file_index}/${progress.total_files})`;
+                    }
+                }
+
+                // Check if processing is complete
+                if (progress.status === 'completed' && progress.progress === 100) {
+                    statusElement.textContent = 'Processing completed successfully!';
+                    statusElement.closest('.alert').className = 'alert alert-success';
+                    progressBar.className = 'progress-bar bg-success';
+                    progressBar.style.width = '100%';
+                    progressBar.setAttribute('aria-valuenow', 100);
+                    
+                    // Show download button
+                    downloadBtn.href = `/download/${taskId}`;
+                    downloadBtn.style.display = 'block';
+                    
+                    eventSource.close();
+                }
+            };
+
+            eventSource.onerror = () => {
+                statusElement.innerHTML = '<strong>Error:</strong> Connection lost';
+                statusElement.closest('.alert').className = 'alert alert-warning';
+                eventSource.close();
+            };
+        }
+
+        // Initialize both forms
+        setupForm(
+            'batch-form', 
+            '/process', 
+            'batch-progress', 
+            'batch-status', 
+            'batch-progress-bar', 
+            'batch-progress-message', 
+            'batch-download-btn'
+        );
+
+        setupForm(
+            'single-form', 
+            '/process_single', 
+            'single-progress', 
+            'single-status', 
+            'single-progress-bar', 
+            'single-progress-message', 
+            'single-download-btn'
+        );
+    </script>
 </body>
 </html>
