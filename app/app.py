@@ -13,7 +13,7 @@ sys.path.insert(0, src_path)
 
 from flask import Flask, request, render_template, send_file, after_this_request, Response
 from werkzeug.utils import secure_filename
-from mzrt2h5 import save_dataset_as_sparse_h5, save_single_mzml_as_sparse_h5
+from mzrt2h5 import save_dataset_as_sparse_h5, save_single_mzml_as_sparse_h5, generate_simulation_data
 
 app = Flask(__name__)
 # Log the src path after app is created
@@ -305,6 +305,88 @@ def process_single_file():
 
         # Return task ID for progress tracking
         return json.dumps({'task_id': task_id, 'mode': 'single'})
+
+@app.route('/download_file')
+def download_simulation_file():
+    import urllib.parse
+    from flask import send_file
+    
+    file_path = request.args.get('path')
+    if not file_path:
+        return "File path not provided", 400
+    
+    # Decode URL-encoded path
+    file_path = urllib.parse.unquote(file_path)
+    
+    # Check if file exists
+    if not os.path.exists(file_path):
+        return f"File not found: {file_path}", 404
+    
+    # Return file as attachment
+    return send_file(file_path, as_attachment=True)
+
+# Handle simulation request
+@app.route('/simulate', methods=['POST'])
+def simulate():
+    data = request.json
+    
+    # Parse basic parameters
+    n_compounds = int(data.get('n_compounds', 100))
+    inscutoff = float(data.get('inscutoff', 0.05))
+    
+    # Parse mzrange and rtrange
+    mzrange_min = float(data.get('mzrange_min', 100))
+    mzrange_max = float(data.get('mzrange_max', 1000))
+    mzrange = [mzrange_min, mzrange_max]
+    
+    rtrange_min = float(data.get('rtrange_min', 0))
+    rtrange_max = float(data.get('rtrange_max', 600))
+    rtrange = [rtrange_min, rtrange_max]
+    
+    # Parse other parameters
+    ppm = float(data.get('ppm', 5))
+    sampleppm = float(data.get('sampleppm', 5))
+    mzdigit = int(data.get('mzdigit', 5))
+    scanrate = float(data.get('scanrate', 0.1))
+    pwidth = int(data.get('pwidth', 10))
+    noise_sd = float(data.get('noise_sd', 0.5))
+    baseline = float(data.get('baseline', 100))
+    baselinesd = float(data.get('baselinesd', 30))
+    snr = float(data.get('snr', 100))
+    tailing_factor = float(data.get('tailing_factor', 1.2))
+    unique = data.get('unique', 'false').lower() == 'true'
+    matrix = data.get('matrix', 'false').lower() == 'true'
+    seed = int(data.get('seed', 42))
+    
+    # Parse comma-separated parameters
+    def parse_csv_param(param, default=None, type_func=float):
+        if param and param.strip():
+            return [type_func(x.strip()) for x in param.split(',')]
+        return default
+    
+    compound = parse_csv_param(data.get('compound'), default=None, type_func=int)
+    rtime = parse_csv_param(data.get('rtime'), default=None)
+    tailingindex = parse_csv_param(data.get('tailingindex'), default=None, type_func=int)
+    matrixmz = parse_csv_param(data.get('matrixmz'), default=None)
+    
+    # Create a unique session ID
+    session_id = str(uuid.uuid4())
+    output_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'simulation', session_id)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Start simulation in a separate thread
+    thread = threading.Thread(
+        target=generate_simulation_data,
+        args=(
+            n_compounds, inscutoff, mzrange, rtrange, ppm, sampleppm, mzdigit, 
+            scanrate, pwidth, noise_sd, baseline, baselinesd, snr, tailing_factor, 
+            unique, matrix, compound, rtime, tailingindex, matrixmz, seed, output_dir, session_id
+        )
+    )
+    thread.daemon = True
+    thread.start()
+    
+    return jsonify({'session_id': session_id})
 
 if __name__ == '__main__':
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)

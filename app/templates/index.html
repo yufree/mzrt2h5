@@ -18,7 +18,7 @@
 <body>
     <div class="container">
         <h1 class="mb-4">mzrt2h5 Converter</h1>
-        <p class="lead">Convert mzML files to deep learning-ready HDF5 format.</p>
+        <p class="lead">Convert mzML files to deep learning-ready HDF5 format with optional simulation capabilities.</p>
 
         <ul class="nav nav-tabs mb-4" id="myTab" role="tablist">
             <li class="nav-item" role="presentation">
@@ -26,6 +26,9 @@
             </li>
             <li class="nav-item" role="presentation">
                 <button class="nav-link" id="single-tab" data-bs-toggle="tab" data-bs-target="#single" type="button" role="tab" aria-controls="single" aria-selected="false">Single File</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="simulate-tab" data-bs-toggle="tab" data-bs-target="#simulate" type="button" role="tab" aria-controls="simulate" aria-selected="false">Generate Simulation Data</button>
             </li>
         </ul>
 
@@ -127,6 +130,169 @@
                     <div id="single-progress-message" class="text-muted small"></div>
                     <div class="d-grid mt-3">
                         <a id="single-download-btn" href="#" class="btn btn-success btn-lg download-btn">Download Results</a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Simulation Tab -->
+            <div class="tab-pane fade" id="simulate" role="tabpanel" aria-labelledby="simulate-tab">
+                <form id="simulate-form">
+                    <h5 class="mb-3">Simulation Parameters</h5>
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="n_compounds" class="form-label">Number of Compounds</label>
+                            <input type="number" class="form-control" id="n_compounds" name="n_compounds" value="100" min="1" max="500">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="inscutoff" class="form-label">Intensity Cutoff</label>
+                            <input type="number" class="form-control" id="inscutoff" name="inscutoff" value="0.05" step="0.01">
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <h6 class="mb-2">Mass Range</h6>
+                        <div class="col-md-3 mb-3">
+                            <label for="mzrange_min" class="form-label">Min m/z</label>
+                            <input type="number" class="form-control" id="mzrange_min" name="mzrange_min" value="100" step="1">
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <label for="mzrange_max" class="form-label">Max m/z</label>
+                            <input type="number" class="form-control" id="mzrange_max" name="mzrange_max" value="1000" step="1">
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <h6 class="mb-2">Retention Time Range</h6>
+                        <div class="col-md-3 mb-3">
+                            <label for="rtrange_min" class="form-label">Min RT</label>
+                            <input type="number" class="form-control" id="rtrange_min" name="rtrange_min" value="0" step="1">
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <label for="rtrange_max" class="form-label">Max RT</label>
+                            <input type="number" class="form-control" id="rtrange_max" name="rtrange_max" value="600" step="1">
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="ppm" class="form-label">Mass Accuracy (ppm)</label>
+                            <input type="number" class="form-control" id="ppm" name="ppm" value="5" step="0.1">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="sampleppm" class="form-label">Sample Mass Accuracy (ppm)</label>
+                            <input type="number" class="form-control" id="sampleppm" name="sampleppm" value="5" step="0.1">
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="mzdigit" class="form-label">m/z Decimal Digits</label>
+                            <input type="number" class="form-control" id="mzdigit" name="mzdigit" value="5" min="1" max="8">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="scanrate" class="form-label">Scan Rate</label>
+                            <input type="number" class="form-control" id="scanrate" name="scanrate" value="0.1" step="0.05">
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="noise_sd" class="form-label">Noise Standard Deviation</label>
+                            <input type="number" class="form-control" id="noise_sd" name="noise_sd" value="0.5" step="0.1">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="pwidth" class="form-label">Peak Width</label>
+                            <input type="number" class="form-control" id="pwidth" name="pwidth" value="10" step="1">
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="baseline" class="form-label">Baseline Intensity</label>
+                            <input type="number" class="form-control" id="baseline" name="baseline" value="100" step="10">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="baselinesd" class="form-label">Baseline Standard Deviation</label>
+                            <input type="number" class="form-control" id="baselinesd" name="baselinesd" value="30" step="5">
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="snr" class="form-label">Signal-to-Noise Ratio</label>
+                            <input type="number" class="form-control" id="snr" name="snr" value="100" min="1">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="tailing_factor" class="form-label">Peak Tailing Factor</label>
+                            <input type="number" class="form-control" id="tailing_factor" name="tailing_factor" value="1.2" step="0.1">
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="unique" name="unique">
+                                <label class="form-check-label" for="unique">Unique Compounds Only</label>
+                            </div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="matrix" name="matrix">
+                                <label class="form-check-label" for="matrix">Add Matrix Effects</label>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="seed" class="form-label">Random Seed</label>
+                            <input type="number" class="form-control" id="seed" name="seed" value="42">
+                        </div>
+                    </div>
+                    
+                    <hr class="my-4">
+                    <h5 class="mb-3">Optional Parameters (Comma-separated values)</h5>
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="compound" class="form-label">Specific Compounds (indices)</label>
+                            <input type="text" class="form-control" id="compound" name="compound" placeholder="e.g., 1,5,10">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="rtime" class="form-label">Retention Times</label>
+                            <input type="text" class="form-control" id="rtime" name="rtime" placeholder="e.g., 100.5,200.3,300.0">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="tailingindex" class="form-label">Tailing Compound Indices</label>
+                            <input type="text" class="form-control" id="tailingindex" name="tailingindex" placeholder="e.g., 2,7,15">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="matrixmz" class="form-label">Matrix m/z Values</label>
+                            <input type="text" class="form-control" id="matrixmz" name="matrixmz" placeholder="e.g., 289.20,327.18,409.26">
+                        </div>
+                    </div>
+
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-info btn-lg">Generate Simulation Data</button>
+                    </div>
+                </form>
+
+                <!-- Progress Display -->
+                <div id="simulate-progress" class="progress-container">
+                    <div class="alert alert-info" role="alert">
+                        <div class="d-flex align-items-center">
+                            <div class="spinner-border" role="status"></div>
+                            <span id="simulate-status">Generating simulation data...</span>
+                        </div>
+                    </div>
+                    <div class="progress">
+                        <div id="simulate-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" style="width: 0%"></div>
+                    </div>
+                    <div id="simulate-progress-message" class="text-muted small"></div>
+                    <div class="mt-3">
+                        <h6>Generated Files:</h6>
+                        <div id="simulate-files-list" class="list-group"></div>
                     </div>
                 </div>
             </div>
@@ -236,26 +402,59 @@
             };
         }
 
-        // Initialize both forms
-        setupForm(
-            'batch-form', 
-            '/process', 
-            'batch-progress', 
-            'batch-status', 
-            'batch-progress-bar', 
-            'batch-progress-message', 
-            'batch-download-btn'
-        );
+        // Function to listen for simulation progress updates
+        function listenForSimulationProgress(taskId, statusElement, progressBar, progressMessage) {
+            const eventSource = new EventSource(`/progress/${taskId}`);
+            const filesList = document.getElementById('simulate-files-list');
 
-        setupForm(
-            'single-form', 
-            '/process_single', 
-            'single-progress', 
-            'single-status', 
-            'single-progress-bar', 
-            'single-progress-message', 
-            'single-download-btn'
-        );
+            eventSource.onmessage = (event) => {
+                const progress = JSON.parse(event.data);
+                
+                if (progress.error) {
+                    statusElement.innerHTML = '<strong>Error:</strong> ' + progress.message;
+                    statusElement.closest('.alert').className = 'alert alert-danger';
+                    progressBar.className = 'progress-bar bg-danger';
+                    progressBar.style.width = '100%';
+                    eventSource.close();
+                    return;
+                }
+
+                // Update status and progress
+                statusElement.textContent = progress.message || 'Generating simulation data...';
+                progressBar.style.width = `${progress.progress}%`;
+                progressBar.setAttribute('aria-valuenow', progress.progress);
+                progressMessage.textContent = progress.step || '';
+
+                // Show generated files when completed
+                if (progress.progress === 100 && progress.status === 'completed' && progress.simulation_result) {
+                    statusElement.textContent = 'Simulation completed!';
+                    progressBar.className = 'progress-bar progress-bar-striped bg-success';
+                    progressBar.style.width = '100%';
+                    
+                    // Display generated files
+                    const result = progress.simulation_result;
+                    filesList.innerHTML = `
+                        <a href="/download_file?path=${encodeURIComponent(result.mzml_path)}" class="list-group-item list-group-item-action">
+                            <strong>mzML File:</strong> ${result.mzml_path.split('/').pop()}
+                        </a>
+                        <a href="/download_file?path=${encodeURIComponent(result.csv_path)}" class="list-group-item list-group-item-action">
+                            <strong>CSV File:</strong> ${result.csv_path.split('/').pop()}
+                        </a>
+                    `;
+                    
+                    eventSource.close();
+                }
+            };
+
+            eventSource.onerror = () => {
+                eventSource.close();
+            };
+        }
+
+        // Set up forms
+        setupForm('batch-form', '/process', 'batch-progress', 'batch-status', 'batch-progress-bar', 'batch-progress-message', 'batch-download-btn');
+        setupForm('single-form', '/process_single', 'single-progress', 'single-status', 'single-progress-bar', 'single-progress-message', 'single-download-btn');
+        setupForm('simulate-form', '/simulate', 'simulate-progress', 'simulate-status', 'simulate-progress-bar', 'simulate-progress-message');
     </script>
 </body>
 </html>
