@@ -128,6 +128,11 @@ Use `mzrt2h5 plot --help` to see all available options for plotting.
 
 ## Changelog
 
+### Version 0.1.5
+
+- **Added** support for 0-compound simulation in `mzrtsim` to enable matrix-only simulations, useful for generating blank matrix data.
+- **Added** support for `mzrtsim` for mzml simulation.
+
 ### Version 0.1.4
 
 - **Fixed** path resolution issues in the web interface to ensure HDF5 files are properly located
