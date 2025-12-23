@@ -81,6 +81,8 @@ save_single_mzml_as_sparse_h5(
 ```
 
 # Create a PyTorch dataset
+
+```python
 dataset = DynamicSparseH5Dataset(
     h5_path="output.h5",
     target_rt_precision=0.5,
