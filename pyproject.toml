@@ -36,6 +36,9 @@ mzrt2h5 = "mzrt2h5.cli:main"
 [tool.setuptools]
 package-dir = {"" = "src"}
 
+[tool.setuptools.package-data]
+"mzrt2h5.mzrtsim" = ["*.txt", "data/*.pkl"]
+
 [project.urls]
 "Homepage" = "https://github.com/yufree/mzrt2h5"
 "Bug Tracker" = "https://github.com/yufree/mzrt2h5/issues"

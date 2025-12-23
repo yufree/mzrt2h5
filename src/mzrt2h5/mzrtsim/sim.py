@@ -380,32 +380,41 @@ def simmzml(db, name, n=100, inscutoff=0.05, mzrange=(30, 1500), rtrange=(0, 600
         rem_list.append(profile)
         
     if not rem_list:
-        raise ValueError("No peaks generated")
+        if n > 0:
+            raise ValueError("No peaks generated")
+        else:
+            # Handle 0 compounds case
+            n_scans = len(rtime0)
+            mzpeak = np.array([])
+            mzpeak_noisy = np.array([])
+            ins_peak = np.zeros((0, n_scans))
+            final_mz = mzpeak_noisy
+            allins = ins_peak
+    else:
+        rem = np.vstack(rem_list) # (total_peaks, n_scans)
+        mzc = np.array(mzc_all)
         
-    rem = np.vstack(rem_list) # (total_peaks, n_scans)
-    mzc = np.array(mzc_all)
-    
-    # Aggregate by m/z
-    # Pandas is good for this
-    df_rem = pd.DataFrame(rem)
-    df_rem['mz'] = mzc
-    alld = df_rem.groupby('mz').sum()
-    
-    mzpeak = alld.index.values
-    
-    # Add ppm noise to mzpeak base values (simulation of accurate mass measurement error?)
-    # R: mzpeak + rnorm(...) * mzpeak * 1e-6 * ppm
-    mzpeak_noisy = mzpeak + np.random.normal(0, noisesd, len(mzpeak)) * mzpeak * 1e-6 * ppm
-    
-    n_unique_peaks = len(mzpeak)
-    n_scans = len(rtime0)
-    
-    # Calculate noise for peaks
-    noise_peak = np.random.normal(baseline, baselinesd, (n_unique_peaks, n_scans))
-    ins_peak = alld.values + noise_peak
-    
-    final_mz = mzpeak_noisy
-    allins = ins_peak
+        # Aggregate by m/z
+        # Pandas is good for this
+        df_rem = pd.DataFrame(rem)
+        df_rem['mz'] = mzc
+        alld = df_rem.groupby('mz').sum()
+        
+        mzpeak = alld.index.values
+        
+        # Add ppm noise to mzpeak base values (simulation of accurate mass measurement error?)
+        # R: mzpeak + rnorm(...) * mzpeak * 1e-6 * ppm
+        mzpeak_noisy = mzpeak + np.random.normal(0, noisesd, len(mzpeak)) * mzpeak * 1e-6 * ppm
+        
+        n_unique_peaks = len(mzpeak)
+        n_scans = len(rtime0)
+        
+        # Calculate noise for peaks
+        noise_peak = np.random.normal(baseline, baselinesd, (n_unique_peaks, n_scans))
+        ins_peak = alld.values + noise_peak
+        
+        final_mz = mzpeak_noisy
+        allins = ins_peak
     
     if matrix:
         if matrixmz is None:
