@@ -47,14 +47,14 @@ def generate_simulation_data(
         mzdigit (int): Number of decimal digits for m/z values
         noise_sd (float): Noise standard deviation
         scanrate (float): Scan rate
-        pwidth (float): Peak width
-        baseline (float): Baseline intensity
+        pwidth (float or list/array): Peak width. Can be a scalar or a vector of length n_compounds.
+        baseline (float or list/array): Baseline intensity. Can be a scalar or a vector of length n_scans to simulate baseline shift.
         baselinesd (float): Baseline standard deviation
-        snr (int): Signal-to-noise ratio
+        snr (int, float, or list/array): Signal-to-noise ratio. Can be a scalar or a vector of length n_compounds.
         tailing_factor (float): Peak tailing factor
         compound (list): Specific compounds to use (None for random selection)
-        rtime (list): Specific retention times (None for random)
-        tailingindex (list): Indices of compounds with tailing (None for all)
+        rtime (list/array): Specific retention times (None for random). Must be a vector of length n_compounds if provided.
+        tailingindex (list): Indices (0-based) of compounds with tailing (None for all).
         seed (int): Random seed
         unique (bool): Whether to use unique compounds
         matrix (bool): Whether to generate matrix

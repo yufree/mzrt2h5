@@ -66,7 +66,9 @@ class DynamicSparseH5Dataset(Dataset):
 
         # --- 2. Pre-calculate slices for fast sample lookup ---
         self.num_total_samples = 0
-        if len(self.all_sample_indices) > 0:
+        if self.covariates:
+            self.num_total_samples = len(next(iter(self.covariates.values())))
+        elif len(self.all_sample_indices) > 0:
             self.num_total_samples = np.max(self.all_sample_indices) + 1
             
         self.sample_slices = {}
@@ -176,10 +178,20 @@ class DynamicSparseH5Dataset(Dataset):
             value = values[actual_idx]
             map_name = f"{key}_to_idx"
             if map_name in self.mappings:
-                value_str = value.decode('utf-8')
-                labels_dict[key] = torch.tensor(self.mappings[map_name][value_str])
+                value_str = value.decode('utf-8') if isinstance(value, bytes) else str(value)
+                labels_dict[key] = torch.tensor(self.mappings[map_name].get(value_str, 0))
             else:
-                labels_dict[key] = torch.tensor(value, dtype=torch.float32)
+                try:
+                    labels_dict[key] = torch.tensor(value, dtype=torch.float32)
+                except (TypeError, ValueError):
+                    # Fallback for non-numeric data without mapping
+                    if isinstance(value, bytes):
+                        try:
+                            labels_dict[key] = torch.tensor(float(value.decode('utf-8')), dtype=torch.float32)
+                        except:
+                            labels_dict[key] = torch.tensor(0.0, dtype=torch.float32)
+                    else:
+                        labels_dict[key] = torch.tensor(0.0, dtype=torch.float32)
 
         final_label = labels_dict[self.target_covariate]
         

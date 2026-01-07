@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A Python package to convert mzML files to HDF5 format for deep learning applications. Version 0.1.4
+A Python package to convert mzML files to HDF5 format for deep learning applications. Version 0.1.6
 
 ## Installation
 
@@ -129,6 +129,14 @@ mzrt2h5 plot \
 Use `mzrt2h5 plot --help` to see all available options for plotting.
 
 ## Changelog
+
+### Version 0.1.6
+
+- **Enhanced** simulation capabilities in `generate_simulation_data`:
+  - `pwidth`, `snr`, and `rtime` now accept vectors to specify values per compound.
+  - `baseline` accepts a vector to simulate baseline shifts over time.
+  - `tailingindex` allows specifying which compounds exhibit tailing.
+- **Fixed** `DynamicSparseH5Dataset` to correctly handle samples with no peaks (empty spectra), ensuring robust loading and label handling.
 
 ### Version 0.1.5
 
