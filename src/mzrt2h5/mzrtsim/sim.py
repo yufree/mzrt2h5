@@ -206,10 +206,32 @@ def simmzml_background(blank_mzml, db, name, n=100, inscutoff=0.05, mzrange=(30,
         
     write_mzml(name + '.mzML', spectra_export)
     
+    # Generate simulated intensity profiles first to calculate max simulated intensity
+    mzc_all = []
+    rem_list = []
+    sim_intensities = []  # Store simulated intensity max for each peak
+    
+    for i in range(n):
+        mzs = mz_list[i]
+        ints = int_list[i]
+        chrom = re[i] # (n_scans,)
+        
+        if len(mzs) == 0:
+            sim_intensities.append([])
+            continue
+            
+        # Outer product: ints (n_peaks,) * chrom (n_scans,) -> (n_peaks, n_scans)
+        profile = ints[:, np.newaxis] * chrom[np.newaxis, :]
+        
+        # Calculate max simulated intensity for each peak
+        max_sim_ins = np.max(profile, axis=1)
+        sim_intensities.append(max_sim_ins)
+    
     # Generate CSV (Simulated compounds info)
     csv_mz = []
     csv_rt = []
     csv_ins = []
+    csv_sim_ins = [] # Simulated intensity (max)
     csv_name = []
     
     for k in range(n):
@@ -217,9 +239,14 @@ def simmzml_background(blank_mzml, db, name, n=100, inscutoff=0.05, mzrange=(30,
         csv_mz.extend(mz_list[k])
         csv_rt.extend([rtime[k]] * count)
         csv_ins.extend(int_list[k])
+        # Add simulated intensity max for each peak
+        if len(sim_intensities[k]) > 0:
+            csv_sim_ins.extend(sim_intensities[k])
+        else:
+            csv_sim_ins.extend([0.0] * count)
         csv_name.extend([subname[k]] * count)
 
-    df2 = pd.DataFrame({'mz': csv_mz, 'rt': csv_rt, 'ins': csv_ins, 'name': csv_name})
+    df2 = pd.DataFrame({'mz': csv_mz, 'rt': csv_rt, 'ins': csv_ins, 'sim_ins': csv_sim_ins, 'name': csv_name})
     df2.to_csv(name + '.csv', index=False)
     
     return name + '.mzML', name + '.csv'
@@ -341,27 +368,12 @@ def simmzml(db, name, n=100, inscutoff=0.05, mzrange=(30, 1500), rtrange=(0, 600
         
     subname = [s['name'] for s in sub]
     
-    # Flatten for CSV
-    # mzv, rtimev, namev
-    csv_mz = []
-    csv_rt = []
-    csv_ins = [] # Added for completeness, though R code logic for csv output is slightly different
-    csv_name = []
-    
-    for k in range(n):
-        count = len(mz_list[k])
-        csv_mz.extend(mz_list[k])
-        csv_rt.extend([rtime[k]] * count)
-        csv_ins.extend(int_list[k])
-        csv_name.extend([subname[k]] * count)
-
-    df2 = pd.DataFrame({'mz': csv_mz, 'rt': csv_rt, 'ins': csv_ins, 'name': csv_name})
-    
-    # Combine chromatography and spectra
+    # Combine chromatography and spectra first to calculate simulated intensity
     # rem: rows = all peaks from all compounds, cols = scans
     
     mzc_all = []
     rem_list = []
+    sim_intensities = []  # Store simulated intensity max for each peak
     
     for i in range(n):
         mzs = mz_list[i]
@@ -369,15 +381,41 @@ def simmzml(db, name, n=100, inscutoff=0.05, mzrange=(30, 1500), rtrange=(0, 600
         chrom = re[i] # (n_scans,)
         
         if len(mzs) == 0:
+            sim_intensities.append([])
             continue
             
         # Outer product: ints (n_peaks,) * chrom (n_scans,) -> (n_peaks, n_scans)
         # Using broadcasting
-        # ints[:, None] * chrom[None, :]
         profile = ints[:, np.newaxis] * chrom[np.newaxis, :]
+        
+        # Calculate max simulated intensity for each peak
+        max_sim_ins = np.max(profile, axis=1)
+        sim_intensities.append(max_sim_ins)
         
         mzc_all.extend(np.round(mzs, mzdigit))
         rem_list.append(profile)
+    
+    # Flatten for CSV
+    # mzv, rtimev, namev, sim_insv
+    csv_mz = []
+    csv_rt = []
+    csv_ins = [] # Database intensity
+    csv_sim_ins = [] # Simulated intensity (max)
+    csv_name = []
+    
+    for k in range(n):
+        count = len(mz_list[k])
+        csv_mz.extend(mz_list[k])
+        csv_rt.extend([rtime[k]] * count)
+        csv_ins.extend(int_list[k])
+        # Add simulated intensity max for each peak
+        if len(sim_intensities[k]) > 0:
+            csv_sim_ins.extend(sim_intensities[k])
+        else:
+            csv_sim_ins.extend([0.0] * count)
+        csv_name.extend([subname[k]] * count)
+
+    df2 = pd.DataFrame({'mz': csv_mz, 'rt': csv_rt, 'ins': csv_ins, 'sim_ins': csv_sim_ins, 'name': csv_name})
         
     if not rem_list:
         if n > 0:

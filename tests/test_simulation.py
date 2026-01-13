@@ -23,7 +23,7 @@ def test_zero_compounds_simulation(tmp_path):
     # Check CSV content
     df = pd.read_csv(csv_file)
     assert len(df) == 0
-    assert list(df.columns) == ['mz', 'rt', 'ins', 'name']
+    assert list(df.columns) == ['mz', 'rt', 'ins', 'sim_ins', 'name']
     
     # Check mzML content size (rough check)
     # The matrix simulation should generate significant data

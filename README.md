@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A Python package to convert mzML files to HDF5 format for deep learning applications. Version 0.1.6
+A Python package to convert mzML files to HDF5 format for deep learning applications. Version 0.1.7
 
 ## Installation
 
@@ -129,6 +129,14 @@ mzrt2h5 plot \
 Use `mzrt2h5 plot --help` to see all available options for plotting.
 
 ## Changelog
+
+### Version 0.1.7
+
+- **Added** simulated intensity column (`sim_ins`) to CSV output of mzML simulation:
+  - The new column shows the maximum simulated intensity (peak height) for each compound peak.
+  - Values match the theoretical maximum that peak detection algorithms should find.
+  - Supports both `simmzml` and `simmzml_background` simulation functions.
+  - Useful for validating peak finding algorithms and understanding simulation parameters.
 
 ### Version 0.1.6
 
