@@ -6,6 +6,91 @@ import scipy.sparse as sparse
 import h5py
 import json
 from tqdm import tqdm
+from .mzrtsim.reader import SimpleMzMLReader
+
+def analyze_ms1_ms2_response(mzml_path, output_csv_path):
+    """
+    Analyzes MS1 and MS2 responses (TIC) and cumulative responses over retention time.
+    For MS2 scans, it also extracts precursor m/z and product m/z peaks for visualization.
+    
+    Args:
+        mzml_path (str): Path to the mzML file.
+        output_csv_path (str): Path to save the result CSV.
+    """
+    reader = SimpleMzMLReader(mzml_path)
+    
+    results = []
+    
+    # Track cumulative sums
+    cum_ms1 = 0.0
+    cum_ms2 = 0.0
+    
+    print(f"Analyzing {mzml_path}...")
+    
+    for spec in reader.get_spectra():
+        rt = spec['rt']
+        ms_level = spec['ms_level']
+        intensity_sum = np.sum(spec['intensity']) if len(spec['intensity']) > 0 else 0.0
+        
+        if ms_level == 1:
+            cum_ms1 += intensity_sum
+            current_cum = cum_ms1
+        elif ms_level == 2:
+            cum_ms2 += intensity_sum
+            current_cum = cum_ms2
+        else:
+            current_cum = 0.0
+            
+        # Basic scan info
+        scan_info = {
+            'rt': rt,
+            'ms_level': ms_level,
+            'tic': intensity_sum,
+            'cumulative_tic': current_cum,
+            'cum_ms1': cum_ms1,
+            'cum_ms2': cum_ms2,
+            'precursor_mz': spec.get('precursor_mz'),
+            'product_mz': None,
+            'product_intensity': None
+        }
+        
+        # If MS2, extract peaks (flattened)
+        if ms_level == 2:
+            mzs = spec['mz']
+            ints = spec['intensity']
+            
+            # Filter for significant peaks to avoid huge CSVs
+            # For visualization, we might just want the whole spectrum or top N
+            # Let's take all peaks > 0.1% of base peak or just all if small
+            if len(ints) > 0:
+                # Simple optimization: only save top 200 peaks if there are many
+                if len(ints) > 200:
+                    idx = np.argsort(ints)[-200:]
+                    mzs = mzs[idx]
+                    ints = ints[idx]
+                
+                for m, i in zip(mzs, ints):
+                    # Copy info and add specific peak data
+                    row = scan_info.copy()
+                    row['product_mz'] = m
+                    row['product_intensity'] = i
+                    results.append(row)
+            else:
+                # Keep the scan entry even if empty, just with None
+                results.append(scan_info)
+        else:
+            # For MS1, we don't output every peak (too big), just the TIC summary
+            # But the user wants MS1 m/z vs MS2 m/z. 
+            # If "MS1 m/z" means "Precursor", then MS1 scans are not the main focus for the scatter plot points,
+            # but they drive the cumulative color.
+            # So we keep MS1 rows to maintain time continuity if needed, or just skip?
+            # Let's keep them but with product_mz = None
+            results.append(scan_info)
+        
+    df = pd.DataFrame(results)
+    df.to_csv(output_csv_path, index=False)
+    print(f"Analysis saved to {output_csv_path}")
+    return df
 
 def load_metadata_from_file(file_path, sample_id_col, separator=','):
     """
@@ -37,7 +122,7 @@ def load_metadata_from_file(file_path, sample_id_col, separator=','):
     
     return metadata_lookup
     
-def process_mzml_to_sparse(file, rt_precision, mz_precision, mz_range=None, rt_range=None):
+def process_mzml_to_sparse(file, rt_precision, mz_precision, mz_range=None, rt_range=None, min_rel_intensity=None):
     """
     Processes a single mzML file into a sparse 2D matrix (RT vs. m/z).
 
@@ -47,6 +132,7 @@ def process_mzml_to_sparse(file, rt_precision, mz_precision, mz_range=None, rt_r
         mz_precision (float): The bin size for the m/z axis.
         mz_range (tuple, optional): A (min, max) tuple to fix the m/z range.
         rt_range (tuple, optional): A (min, max) tuple to fix the RT range.
+        min_rel_intensity (float, optional): Keep only points >= this fraction of scan base peak.
 
     Returns:
         tuple: A COO sparse matrix, the used RT range, and the used m/z range.
@@ -57,11 +143,22 @@ def process_mzml_to_sparse(file, rt_precision, mz_precision, mz_range=None, rt_r
     for spectrum in run:
         # Process only MS1 level scans with actual data points
         if spectrum.ms_level == 1 and len(spectrum.mz) > 0:
-            spectra_data.append({
-                "rt": spectrum.scan_time_in_minutes() * 60, # Convert RT to seconds
-                "mz": spectrum.mz,
-                "intensity": spectrum.i.astype(np.int32)
-            })
+            intensities = spectrum.i.astype(np.float32)
+            mz = spectrum.mz
+            
+            if min_rel_intensity is not None:
+                max_i = np.max(intensities)
+                if max_i > 0:
+                    mask = (intensities / max_i) >= min_rel_intensity
+                    mz = mz[mask]
+                    intensities = intensities[mask]
+            
+            if len(mz) > 0:
+                spectra_data.append({
+                    "rt": spectrum.scan_time_in_minutes() * 60, # Convert RT to seconds
+                    "mz": mz,
+                    "intensity": intensities.astype(np.int32)
+                })
 
     # If the file is empty or has no MS1 scans, return an empty matrix
     if not spectra_data:
@@ -135,6 +232,7 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
                               sample_id_col='Sample Name',
                               separator=',',
                               mz_range=None, rt_range=None,
+                              min_rel_intensity=None,
                               progress_callback=None):
     """
     Processes a folder of mzML files and saves them as a single, consolidated
@@ -150,6 +248,7 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
         separator (str): Separator for the metadata file (e.g., ',').
         mz_range (tuple, optional): Fixed (min, max) m/z range.
         rt_range (tuple, optional): Fixed (min, max) RT range.
+        min_rel_intensity (float, optional): Keep only points >= this fraction of scan base peak.
         progress_callback (function, optional): Callback function to report progress updates.
     """
     
@@ -163,7 +262,7 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
     all_covariates = []
     
     # Find all .mzML files and match them with loaded metadata
-    all_mzml_files = [os.path.join(root, f) for root, _, fs in os.walk(folder) for f in fs if f.endswith('.mzML')]
+    all_mzml_files = sorted([os.path.join(root, f) for root, _, fs in os.walk(folder) for f in fs if f.endswith('.mzML')])
     
     for f_path in all_mzml_files:
         # Assumes filename (without extension) is the sample ID
@@ -191,7 +290,7 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
     if final_rt_range is None or final_mz_range is None:
         print("Determining data ranges from the first file...")
         first_matrix, used_rt, used_mz = process_mzml_to_sparse(
-            files_to_process[0], rt_precision, mz_precision, mz_range, rt_range
+            files_to_process[0], rt_precision, mz_precision, mz_range, rt_range, min_rel_intensity
         )
         final_rt_range, final_mz_range = used_rt, used_mz
         final_shape = first_matrix.shape
@@ -201,7 +300,7 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
         print(f"  - Image Shape: {final_shape}\n")
 
     print(f"\nProcessing {len(files_to_process)} matched mzML files...")
-    
+
     with h5py.File(save_path, 'w') as f:
         # Create resizable datasets to append data from each file
         dset_data = f.create_dataset('data', shape=(0,), maxshape=(None,), dtype=np.int32, compression='gzip')
@@ -214,56 +313,70 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
 
         # Main loop to process each file and append its data to the HDF5 datasets
         total_files = len(files_to_process)
+        written_indices = []  # indices into files_to_process of files actually written
         for i, f_path in enumerate(tqdm(files_to_process, desc="Processing & Writing")):
             if progress_callback:
                 progress = 30 + int((i / total_files) * 50)
                 progress_callback({
-                    'step': 'processing_files', 
-                    'status': 'in_progress', 
-                    'message': f'Processing file {i+1}/{total_files}: {os.path.basename(f_path)}', 
+                    'step': 'processing_files',
+                    'status': 'in_progress',
+                    'message': f'Processing file {i+1}/{total_files}: {os.path.basename(f_path)}',
                     'progress': progress,
                     'file_index': i+1,
                     'total_files': total_files
                 })
-            
+
             if i == 0 and first_matrix is not None:
                 sparse_matrix = first_matrix
             else:
                 sparse_matrix, _, _ = process_mzml_to_sparse(
-                    f_path, rt_precision, mz_precision, final_mz_range, final_rt_range
+                    f_path, rt_precision, mz_precision, final_mz_range, final_rt_range, min_rel_intensity
                 )
-            
-            if final_shape is None: 
+
+            if final_shape is None:
                 final_shape = sparse_matrix.shape
 
             intensities = sparse_matrix.data
             rt_indices = sparse_matrix.row
             mz_indices = sparse_matrix.col
             num_points = len(intensities)
-            
+
+            # Skip files with no data points (e.g., blank samples)
+            if num_points == 0:
+                print(f"  Skipping {os.path.basename(f_path)} - no data points.")
+                continue
+
+            # Use the count of already-written samples as the sample index to avoid gaps
+            written_sample_idx = len(written_indices)
+            written_indices.append(i)
+
             # Append data for the current file
             dset_data.resize(dset_data.shape[0] + num_points, axis=0)
             dset_data[-num_points:] = intensities
-            
+
             dset_rt.resize(dset_rt.shape[0] + num_points, axis=0)
             dset_rt[-num_points:] = rt_indices
 
             dset_mz.resize(dset_mz.shape[0] + num_points, axis=0)
             dset_mz[-num_points:] = mz_indices
-            
+
             dset_sample.resize(dset_sample.shape[0] + num_points, axis=0)
-            dset_sample[-num_points:] = [i] * num_points
+            dset_sample[-num_points:] = [written_sample_idx] * num_points
 
         print("\nWriting metadata to HDF5 file...")
 
+        # Filter covariates and file list to only include files that were actually written
+        written_covariates = [all_covariates[i] for i in written_indices]
+        written_files = [files_to_process[i] for i in written_indices]
+
         # Save the final shape of the 2D matrices
         f.create_dataset('shape', data=final_shape)
-        
+
         # Save all covariates and create mappings for string-based ones
-        covariate_keys = list(all_covariates[0].keys())
+        covariate_keys = list(written_covariates[0].keys()) if written_covariates else []
         all_mappings = {}
         for key in covariate_keys:
-            values = [cov[key] for cov in all_covariates]
+            values = [cov[key] for cov in written_covariates]
             if isinstance(values[0], str):
                 # For string data, save as byte strings and create an integer mapping
                 f.create_dataset(key, data=np.array(values, dtype='S'))
@@ -272,10 +385,14 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
             else:
                 # For numerical data, save directly
                 f.create_dataset(key, data=np.array(values))
-        
+
         # Save the string-to-index mappings as a JSON string in attributes
         if all_mappings:
             f.attrs['mappings'] = json.dumps(all_mappings)
+
+        # Store sample IDs (filenames without extension) for downstream workflows
+        sample_ids = [os.path.basename(fp).replace('.mzML', '') for fp in written_files]
+        f.create_dataset('sample_id', data=np.array(sample_ids, dtype='S'))
 
         # Save processing parameters and data ranges as attributes
         f.attrs['rt_precision'] = rt_precision
@@ -292,6 +409,7 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
 
 def save_single_mzml_as_sparse_h5(mzml_file_path, save_path, rt_precision, mz_precision,
                                    mz_range=None, rt_range=None, sample_name=None,
+                                   min_rel_intensity=None,
                                    progress_callback=None):
     """
     Processes a single mzML file and saves it as a sparse HDF5 file.
@@ -318,7 +436,7 @@ def save_single_mzml_as_sparse_h5(mzml_file_path, save_path, rt_precision, mz_pr
         progress_callback({'step': 'initializing', 'status': 'in_progress', 'message': 'Processing single file', 'progress': 10})
 
     sparse_matrix, used_rt_range, used_mz_range = process_mzml_to_sparse(
-        mzml_file_path, rt_precision, mz_precision, mz_range, rt_range
+        mzml_file_path, rt_precision, mz_precision, mz_range, rt_range, min_rel_intensity
     )
     if progress_callback:
         progress_callback({'step': 'processing_file', 'status': 'completed', 'message': 'Processed file data', 'progress': 50})
@@ -344,6 +462,7 @@ def save_single_mzml_as_sparse_h5(mzml_file_path, save_path, rt_precision, mz_pr
             f.create_dataset('data', data=intensities, compression='gzip')
             f.create_dataset('rt_indices', data=rt_indices, compression='gzip')
             f.create_dataset('mz_indices', data=mz_indices, compression='gzip')
+            f.create_dataset('sample_indices', data=np.zeros(len(intensities), dtype=np.int32), compression='gzip')
             f.create_dataset('sample_name', data=np.array([sample_name], dtype='S'))
             f.create_dataset('shape', data=final_shape)
 

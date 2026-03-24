@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A Python package to convert mzML files to HDF5 format for deep learning applications. Version 0.1.7
+A Python package to convert mzML files to HDF5 format for deep learning applications. Version 0.1.8
 
 ## Installation
 
@@ -129,6 +129,11 @@ mzrt2h5 plot \
 Use `mzrt2h5 plot --help` to see all available options for plotting.
 
 ## Changelog
+
+### Version 0.1.8
+- **Added** CNN end-to-end deep learning model (`MzrtCNN`) for sample classification directly on sparse 2D mass spec images via `mzrt2h5.model` and `mzrt2h5.trainer`.
+- **Added** RT alignment module (`align_h5`) using base peak chromatogram (BPC) cross-correlation via `mzrt2h5.alignment`.
+- **Enhanced** `DynamicSparseH5Dataset` by supporting `target_covariate` for classification tasks.
 
 ### Version 0.1.7
 

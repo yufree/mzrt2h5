@@ -178,7 +178,6 @@ if __name__ == "__main__":
     # Example usage
     print("Generating complex high-resolution simulation data...")
     result = generate_simulation_data(
-        data_type="complex_hires",
         n_compounds=100,
         output_dir="test_simulation"
     )

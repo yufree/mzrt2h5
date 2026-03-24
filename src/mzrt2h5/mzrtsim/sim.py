@@ -13,13 +13,13 @@ def simmzml_background(blank_mzml, db, name, n=100, inscutoff=0.05, mzrange=(30,
     Simulates peaks and adds them to an existing blank mzML file.
     """
     np.random.seed(seed)
-    
-    # 1. Read RTs from blank
+
+    # 1. Read MS1-only RTs from blank (MS2 scans are excluded to keep scan_idx aligned)
     print(f"Reading retention times from {blank_mzml}...")
     reader = SimpleMzMLReader(blank_mzml)
-    rtime0 = reader.get_rts()
+    rtime0 = np.array([spec['rt'] for spec in reader.get_spectra() if spec['ms_level'] == 1])
     if len(rtime0) == 0:
-        raise ValueError("No retention times found in blank file.")
+        raise ValueError("No MS1 retention times found in blank file.")
         
     print(f"Found {len(rtime0)} scans.")
     

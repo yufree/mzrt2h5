@@ -108,3 +108,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Testing and analysis artifacts
+*.mzML
+*.png
+*.csv
+plot_ms1_ms2.py
+test_plot.py

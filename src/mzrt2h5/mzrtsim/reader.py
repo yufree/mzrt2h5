@@ -85,6 +85,24 @@ class SimpleMzMLReader:
                                 rt = val
                                 break
                 spectrum['rt'] = rt
+
+                # Precursor information
+                precursor_mz = None
+                if ms_level > 1:
+                    precursor_list = elem.find('mzml:precursorList', self.ns)
+                    if precursor_list is not None:
+                        precursor = precursor_list.find('mzml:precursor', self.ns)
+                        if precursor is not None:
+                            selected_ion_list = precursor.find('mzml:selectedIonList', self.ns)
+                            if selected_ion_list is not None:
+                                selected_ion = selected_ion_list.find('mzml:selectedIon', self.ns)
+                                if selected_ion is not None:
+                                    for cv in selected_ion.findall('mzml:cvParam', self.ns):
+                                        if cv.attrib.get('accession') == 'MS:1000744': # selected ion m/z
+                                            precursor_mz = float(cv.attrib.get('value'))
+                                            break
+                spectrum['precursor_mz'] = precursor_mz
+
                 
                 # Binary Data
                 binary_list = elem.find('mzml:binaryDataArrayList', self.ns)

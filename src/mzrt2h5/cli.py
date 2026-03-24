@@ -1,5 +1,5 @@
 import click
-from .processing import save_dataset_as_sparse_h5
+from .processing import save_dataset_as_sparse_h5, analyze_ms1_ms2_response
 from .visualization import plot_sample_image
 
 @click.group()
@@ -65,6 +65,21 @@ def plot(h5_path, sample_id, rt_precision, mz_precision, output_path, cmap, figs
         )
     except Exception as e:
         click.echo(click.style(f"An error occurred during plotting: {e}", fg='red'), err=True)
+
+@main.command()
+@click.argument('mzml_path', type=click.Path(exists=True, dir_okay=False, resolve_path=True))
+@click.argument('output_csv', type=click.Path(writable=True, resolve_path=True))
+def ms1ms2(mzml_path, output_csv):
+    """
+    Analyzes a single mzML file to generate MS1 vs MS2 cumulative response (TIC) data.
+    
+    MZML_PATH: Path to the input mzML file.
+    OUTPUT_CSV: Path to save the output CSV file.
+    """
+    try:
+        analyze_ms1_ms2_response(mzml_path, output_csv)
+    except Exception as e:
+        click.echo(click.style(f"An error occurred: {e}", fg='red'), err=True)
 
 if __name__ == '__main__':
     main()

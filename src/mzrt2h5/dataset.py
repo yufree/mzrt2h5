@@ -26,13 +26,15 @@ class DynamicSparseH5Dataset(Dataset):
                  transform=None,
                  augment=False,
                  aug_rt_shift_s=0.0,  # Max RT shift in seconds
-                 aug_mz_shift_ppm=0.0): # Max m/z shift in PPM
+                 aug_mz_shift_ppm=0.0, # Max m/z shift in PPM
+                 apply_log1p_norm=False): # Apply log1p + MinMax norm
         
         self.h5_path = h5_path
         self.transform = transform
         self.augment = augment
         self.aug_rt_shift_s = aug_rt_shift_s
         self.aug_mz_shift_ppm = aug_mz_shift_ppm
+        self.apply_log1p_norm = apply_log1p_norm
         
         # --- 1. Load all data and metadata from HDF5 file ---
         with h5py.File(self.h5_path, 'r') as f:
@@ -77,11 +79,14 @@ class DynamicSparseH5Dataset(Dataset):
             self.sample_slices[i] = (boundaries[i], boundaries[i+1])
 
         # --- 3. Validate target_covariate ---
-        if target_covariate not in self.covariates:
+        if target_covariate is not None and target_covariate not in self.covariates:
             raise ValueError(f"Error: Specified target_covariate '{target_covariate}' not in HDF5 file. "
                              f"Available covariates: {list(self.covariates.keys())}")
         self.target_covariate = target_covariate
-        print(f"Dataset initialized. Prediction target is set to: '{self.target_covariate}'")
+        if target_covariate is not None:
+            print(f"Dataset initialized. Prediction target is set to: '{self.target_covariate}'")
+        else:
+            print(f"Dataset initialized. Inference mode (no target covariate).")
 
         # --- 4. Setup Rescaling ---
         self.target_rt_precision = target_rt_precision
@@ -171,31 +176,42 @@ class DynamicSparseH5Dataset(Dataset):
         # --- E. Apply Spatial Crop ---
         if self.crop_slice:
             image_tensor = image_tensor[:, self.crop_slice[0], self.crop_slice[1]]
+            
+        # --- E2. Apply Log Transformation if enabled ---
+        if self.apply_log1p_norm:
+            image_tensor = torch.log1p(image_tensor)
+            img_min = image_tensor.min()
+            img_max = image_tensor.max()
+            if img_max - img_min > 0:
+                image_tensor = (image_tensor - img_min) / (img_max - img_min + 1e-6)
         
         # --- F. Get the Target Label ---
-        labels_dict = {}
-        for key, values in self.covariates.items():
-            value = values[actual_idx]
-            map_name = f"{key}_to_idx"
-            if map_name in self.mappings:
-                value_str = value.decode('utf-8') if isinstance(value, bytes) else str(value)
-                labels_dict[key] = torch.tensor(self.mappings[map_name].get(value_str, 0))
-            else:
-                try:
-                    labels_dict[key] = torch.tensor(value, dtype=torch.float32)
-                except (TypeError, ValueError):
-                    # Fallback for non-numeric data without mapping
-                    if isinstance(value, bytes):
-                        try:
-                            labels_dict[key] = torch.tensor(float(value.decode('utf-8')), dtype=torch.float32)
-                        except:
+        if self.target_covariate is None:
+            final_label = torch.tensor(0, dtype=torch.long)
+        else:
+            labels_dict = {}
+            for key, values in self.covariates.items():
+                value = values[actual_idx]
+                map_name = f"{key}_to_idx"
+                if map_name in self.mappings:
+                    value_str = value.decode('utf-8') if isinstance(value, bytes) else str(value)
+                    labels_dict[key] = torch.tensor(self.mappings[map_name].get(value_str, 0))
+                else:
+                    try:
+                        labels_dict[key] = torch.tensor(value, dtype=torch.float32)
+                    except (TypeError, ValueError):
+                        # Fallback for non-numeric data without mapping
+                        if isinstance(value, bytes):
+                            try:
+                                labels_dict[key] = torch.tensor(float(value.decode('utf-8')), dtype=torch.float32)
+                            except:
+                                labels_dict[key] = torch.tensor(0.0, dtype=torch.float32)
+                        else:
                             labels_dict[key] = torch.tensor(0.0, dtype=torch.float32)
-                    else:
-                        labels_dict[key] = torch.tensor(0.0, dtype=torch.float32)
-
-        final_label = labels_dict[self.target_covariate]
+    
+            final_label = labels_dict[self.target_covariate].long()
         
         if self.transform:
             image_tensor = self.transform(image_tensor)
             
-        return image_tensor, final_label.long()
+        return image_tensor, final_label

@@ -29,6 +29,7 @@ def plot_sample_image(
             h5_path=h5_path,
             target_rt_precision=target_rt_precision,
             target_mz_precision=target_mz_precision,
+            target_covariate=None,
             augment=False # No augmentation for visualization
         )
     except Exception as e:
