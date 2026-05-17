@@ -2,7 +2,16 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A Python package to convert mzML files to HDF5 format for deep learning applications. Version 0.1.8
+A Python package to convert mzML mass spectrometry files to HDF5 format for deep learning. Supports metadata from CSV, Metabolomics Workbench (mwTab), and MetaboLights (ISA-Tab). Version 0.1.9
+
+## Design Philosophy
+
+`mzrt2h5` stores data at the **highest practical resolution** (default 0.0001 Da, 0.1 s) in a sparse HDF5 format. This high-resolution (HR) storage is the foundation for two downstream workflows in the `mzrt*` suite:
+
+- **`mzrtpeak`** — builds a low-resolution (LR) master image (typically 1 Da × 1 s bins) for fast CNN-based peak detection, then restores precise peak coordinates directly from the 0.0001 Da HR data (ppm-level mass accuracy).
+- **`mzrtgnn`** — consumes the resulting peak table for PMD-based metabolic network analysis.
+
+The sparse format means that increasing m/z resolution from 0.01 Da to 0.0001 Da adds no storage overhead beyond the actual non-zero data points already present in the mzML files.
 
 ## Installation
 
@@ -10,125 +19,255 @@ A Python package to convert mzML files to HDF5 format for deep learning applicat
 pip install mzrt2h5
 ```
 
-After installation, a new command `mzrt2h5` will be available in your terminal.
+## Quick Start
 
-## CLI Usage
-
-This is the most straightforward way to use the package. After installation, you can call the `mzrt2h5` command from your terminal.
-
-### Batch Processing (Multiple Files)
-
-**Example:**
+Put your mzML files in a folder, point the tool at your metadata file, and get an HDF5 file ready for deep learning:
 
 ```bash
-mzrt2h5 process \
-    /path/to/your/mzml_folder/ \
-    /path/to/your/output.h5 \
-    --metadata-csv-path /path/to/your/metadata.csv \
-    --rt-precision 0.1 \
-    --mz-precision 0.01
+# CSV metadata
+mzrt2h5 process ./mzml_folder/ output.h5 --metadata-csv-path metadata.csv
+
+# Metabolomics Workbench mwTab (auto-detected)
+mzrt2h5 process ./mzml_folder/ output.h5 --metadata-csv-path ST000001.txt
+
+# MetaboLights ISA-Tab (auto-detected from directory)
+mzrt2h5 process ./mzml_folder/ output.h5 --metadata-csv-path ./MTBLS123/
 ```
 
-### Single File Conversion
-
-To convert a single mzML file without needing metadata:
-
-**Example:**
+The format is auto-detected. You can also force it with `--metadata-format`:
 
 ```bash
-mzrt2h5 process-single \
-    /path/to/your/file.mzML \
-    /path/to/your/output.h5 \
-    --rt-precision 0.1 \
-    --mz-precision 0.01
+mzrt2h5 process ./mzml_folder/ output.h5 \
+    --metadata-csv-path ST000001.txt \
+    --metadata-format mwtab
 ```
 
-**Options:**
+## Metadata Formats
 
-Use `mzrt2h5 --help` to see all available options.
+### CSV / TSV
 
-## Python Usage
+A plain table where one column contains sample IDs that match your mzML filenames (without the `.mzML` extension).
 
-### Batch Processing (Multiple Files)
+| Sample Name | class  | batch |
+|-------------|--------|-------|
+| sample_01   | control| 1     |
+| sample_02   | treated| 1     |
+
+```bash
+mzrt2h5 process ./mzml/ output.h5 \
+    --metadata-csv-path metadata.csv \
+    --sample-id-col "Sample Name" \
+    --separator ","
+```
+
+### Metabolomics Workbench (mwTab)
+
+Download the mwTab file from Metabolomics Workbench (e.g., `ST000001.txt`). The parser reads the `SUBJECT_SAMPLE_FACTORS` section, which encodes factors as `key:value | key:value` and additional data as `key=value;key=value`.
+
+If the additional data contains a `RAW_FILE_NAME` field, it is used to match mzML filenames automatically. Otherwise, sample IDs are matched against filenames directly.
+
+```
+SUBJECT_SAMPLE_FACTORS	SU001	Sample_A	Treatment:Control | Gender:Male	RAW_FILE_NAME=sample_a.mzML
+SUBJECT_SAMPLE_FACTORS	SU002	Sample_B	Treatment:Disease | Gender:Female	RAW_FILE_NAME=sample_b.mzML
+```
+
+```bash
+mzrt2h5 process ./mzml/ output.h5 --metadata-csv-path ST000001.txt
+```
+
+### MetaboLights (ISA-Tab)
+
+Download the study metadata from MetaboLights. Point the tool at the directory containing `s_*.txt` (study) and `a_*.txt` (assay) files, or at a single file (the companion is found automatically).
+
+- The study file (`s_*.txt`) provides `Characteristics[*]` and `Factor Value[*]` columns.
+- The assay file (`a_*.txt`) maps `Sample Name` to `Raw Spectral Data File` (your mzML filenames).
+
+```bash
+# Point at the ISA-Tab directory
+mzrt2h5 process ./mzml/ output.h5 --metadata-csv-path ./MTBLS123/
+
+# Or point at a single file
+mzrt2h5 process ./mzml/ output.h5 --metadata-csv-path ./MTBLS123/s_MTBLS123.txt
+```
+
+## CLI Reference
+
+### `mzrt2h5 process` — Batch Processing
+
+```
+mzrt2h5 process FOLDER SAVE_PATH [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--metadata-csv-path` | (required) | Path to metadata file (CSV, mwTab, or ISA-Tab directory) |
+| `--metadata-format` | `auto` | Force format: `auto`, `csv`, `mwtab`, `isatab` |
+| `--sample-id-col` | `Sample Name` | Column name for sample IDs (CSV/TSV only) |
+| `--separator` | `,` | Separator for CSV/TSV files |
+| `--rt-precision` | `0.1` | Bin size for the retention time axis (seconds) |
+| `--mz-precision` | `0.0001` | Bin size for the m/z axis (Da). 0.0001 Da gives <0.5 ppm at m/z 500 for HR restoration |
+| `--mz-range` | auto | Fixed (min, max) m/z range |
+| `--rt-range` | auto | Fixed (min, max) RT range |
+
+### `mzrt2h5 plot` — Visualize a Sample
+
+```bash
+mzrt2h5 plot output.h5 "Sample_A" --rt-precision 0.5 --mz-precision 0.05 --output-path plot.png
+```
+
+### `mzrt2h5 ms1ms2` — MS1/MS2 TIC Analysis
+
+```bash
+mzrt2h5 ms1ms2 input.mzML output.csv
+```
+
+## Python API
+
+### Batch Processing
 
 ```python
-from mzrt2h5.processing import save_dataset_as_sparse_h5
-from mzrt2h5.dataset import DynamicSparseH5Dataset
-from mzrt2h5.visualization import plot_sample_image
+from mzrt2h5 import save_dataset_as_sparse_h5
 
-# Process mzML files and save to HDF5
+# CSV metadata
 save_dataset_as_sparse_h5(
-    folder="path/to/your/mzML_files",
+    folder="path/to/mzML_files",
     save_path="output.h5",
     rt_precision=0.1,
-    mz_precision=0.01,
-    metadata_csv_path="path/to/your/metadata.csv",
+    mz_precision=0.0001,
+    metadata_csv_path="metadata.csv",
+)
+
+# mwTab (auto-detected)
+save_dataset_as_sparse_h5(
+    folder="path/to/mzML_files",
+    save_path="output.h5",
+    rt_precision=0.1,
+    mz_precision=0.0001,
+    metadata_csv_path="ST000001.txt",
+)
+
+# ISA-Tab (auto-detected)
+save_dataset_as_sparse_h5(
+    folder="path/to/mzML_files",
+    save_path="output.h5",
+    rt_precision=0.1,
+    mz_precision=0.0001,
+    metadata_csv_path="./MTBLS123/",
 )
 ```
+
+### Metadata Parsers (Standalone)
+
+```python
+from mzrt2h5 import load_metadata_from_file, load_metadata_from_mwtab, load_metadata_from_isatab
+
+# Auto-detect format
+meta = load_metadata_from_file("ST000001.txt")
+meta = load_metadata_from_file("./MTBLS123/")
+meta = load_metadata_from_file("metadata.csv")
+
+# Or call parsers directly
+meta = load_metadata_from_mwtab("ST000001.txt")
+meta = load_metadata_from_isatab("./MTBLS123/")
+```
+
+All parsers return `dict[str, dict[str, str]]` — a mapping from sample ID (or mzML filename without extension) to a dictionary of covariates.
 
 ### Single File Conversion
 
 ```python
-from mzrt2h5.processing import save_single_mzml_as_sparse_h5
+from mzrt2h5 import save_single_mzml_as_sparse_h5
 
-# Process a single mzML file and save to HDF5
 save_single_mzml_as_sparse_h5(
-    mzml_file_path="path/to/your/file.mzML",
+    mzml_file_path="sample.mzML",
     save_path="output.h5",
     rt_precision=0.1,
-    mz_precision=0.01,
+    mz_precision=0.0001,
 )
 ```
 
-# Create a PyTorch dataset
+### PyTorch Dataset
 
 ```python
+from mzrt2h5 import DynamicSparseH5Dataset
+
 dataset = DynamicSparseH5Dataset(
     h5_path="output.h5",
     target_rt_precision=0.5,
     target_mz_precision=0.05,
 )
 
-# Create a dataset with on-the-fly augmentation for training
-# with a random retention time shift of +/- 30 seconds
-# and a random m/z shift of +/- 5 ppm.
+# With data augmentation for training
 train_dataset = DynamicSparseH5Dataset(
     h5_path="output.h5",
     target_rt_precision=0.5,
     target_mz_precision=0.05,
     augment=True,
     aug_rt_shift_s=30,
-    aug_mz_shift_ppm=5
+    aug_mz_shift_ppm=5,
 )
+```
 
-# Plot a sample image from the HDF5 file
+### CNN Classification
+
+```python
+from mzrt2h5 import train_model, predict, cross_validate
+
+# Train a model
+result = train_model("output.h5", target_covariate="class", num_epochs=50)
+
+# Predict on new data
+preds = predict("new_data.h5", model_path="model.pth")
+
+# Cross-validation
+cv = cross_validate("output.h5", target_covariate="class", n_folds=5)
+```
+
+### RT Alignment
+
+```python
+from mzrt2h5 import align_h5
+
+align_h5("output.h5", output_path="aligned.h5")
+```
+
+### Visualization
+
+```python
+from mzrt2h5 import plot_sample_image
+
 plot_sample_image(
     h5_path="output.h5",
-    sample_id="Sample_A", # Or an integer index like 0
+    sample_id="Sample_A",
     target_rt_precision=0.5,
     target_mz_precision=0.05,
-    output_path="sample_A_plot.png" # Saves to file, remove to display interactively
+    output_path="plot.png",
 )
 ```
 
-## Visualization
-
-To visualize a mass spectrometry image from your HDF5 file, use the `mzrt2h5 plot` command:
+## Web Interface
 
 ```bash
-mzrt2h5 plot \
-    /path/to/your/output.h5 \
-    "Sample_A" \
-    --rt-precision 0.5 \
-    --mz-precision 0.05 \
-    --output-path sample_A_plot.png
+python app/app.py
 ```
 
-**Options:**
-
-Use `mzrt2h5 plot --help` to see all available options for plotting.
+Open `http://127.0.0.1:5002` to access the web interface with real-time progress tracking.
 
 ## Changelog
+
+### Version 0.1.9
+- **Added** metadata support for Metabolomics Workbench mwTab format (`load_metadata_from_mwtab`).
+- **Added** metadata support for MetaboLights ISA-Tab format (`load_metadata_from_isatab`).
+- **Added** auto-detection of metadata format in `load_metadata_from_file` and CLI (`--metadata-format`).
+- **Added** `--metadata-format` option to CLI `process` command (`auto`/`csv`/`mwtab`/`isatab`).
+- **Added** `repack_h5()` to repack an existing HDF5 file with a different compression codec (e.g. gzip → lzf) and chunk size for faster downstream reads.
+- **Added** `min_rel_intensity` parameter to `process_mzml_to_sparse()` and `save_dataset_as_sparse_h5()` to filter low-intensity peaks below a fraction of each scan's base peak.
+- **Rewritten** RT alignment module: replaced the single `align_h5()` function with a three-function API — `compute_rt_corrections()`, `apply_rt_corrections()`, and the convenience wrapper `align_rt()` — adding QC-aware reference selection, segmented BPC cross-correlation with spline smoothing, and a streaming two-pass strategy that keeps memory under ~10 MB regardless of file size.
+- **Fixed** version mismatch between `__init__.py` and `pyproject.toml`.
+- **Fixed** Flask app `simulate` endpoint argument order and missing `jsonify` import.
+- **Fixed** path traversal vulnerability in Flask `download_file` endpoint.
+- **Fixed** bare `except` clause in `DynamicSparseH5Dataset`.
+- **Fixed** silent exception swallowing in `save_single_mzml_as_sparse_h5`.
 
 ### Version 0.1.8
 - **Added** CNN end-to-end deep learning model (`MzrtCNN`) for sample classification directly on sparse 2D mass spec images via `mzrt2h5.model` and `mzrt2h5.trainer`.
@@ -136,60 +275,14 @@ Use `mzrt2h5 plot --help` to see all available options for plotting.
 - **Enhanced** `DynamicSparseH5Dataset` by supporting `target_covariate` for classification tasks.
 
 ### Version 0.1.7
-
-- **Added** simulated intensity column (`sim_ins`) to CSV output of mzML simulation:
-  - The new column shows the maximum simulated intensity (peak height) for each compound peak.
-  - Values match the theoretical maximum that peak detection algorithms should find.
-  - Supports both `simmzml` and `simmzml_background` simulation functions.
-  - Useful for validating peak finding algorithms and understanding simulation parameters.
+- **Added** simulated intensity column (`sim_ins`) to CSV output of mzML simulation.
 
 ### Version 0.1.6
-
-- **Enhanced** simulation capabilities in `generate_simulation_data`:
-  - `pwidth`, `snr`, and `rtime` now accept vectors to specify values per compound.
-  - `baseline` accepts a vector to simulate baseline shifts over time.
-  - `tailingindex` allows specifying which compounds exhibit tailing.
-- **Fixed** `DynamicSparseH5Dataset` to correctly handle samples with no peaks (empty spectra), ensuring robust loading and label handling.
+- **Enhanced** simulation capabilities: `pwidth`, `snr`, `rtime` accept per-compound vectors; `baseline` accepts time-varying vector; `tailingindex` selects tailing compounds.
+- **Fixed** `DynamicSparseH5Dataset` handling of empty spectra samples.
 
 ### Version 0.1.5
-
-- **Added** support for 0-compound simulation in `mzrtsim` to enable matrix-only simulations, useful for generating blank matrix data.
-- **Added** support for `mzrtsim` for mzml simulation.
+- **Added** 0-compound simulation and `mzrtsim` module.
 
 ### Version 0.1.4
-
-- **Fixed** path resolution issues in the web interface to ensure HDF5 files are properly located
-- **Improved** error handling in HDF5 file writing
-- **Updated** default precision values in the web interface (rt_precision: 1.0, mz_precision: 0.001)
-- **Enhanced** progress tracking and debugging in both CLI and web interface
-- **Added** better file extension handling for output filenames
-- **Fixed** version consistency across all package files
-
-## Web Interface
-
-This package includes a web interface with real-time progress indicators for both single-file and batch processing.
-
-1.  **Run the Flask app:**
-    ```bash
-    python app/app.py
-    ```
-
-2.  **Access the web interface:**
-    Open your web browser and go to `http://127.0.0.1:5002`.
-
-3.  **Use the interface:**
-    The web interface has two modes:
-    - **Batch Processing**: Upload a metadata file and multiple mzML files for processing
-    - **Single File**: Upload a single mzML file without needing metadata
-
-    Select the appropriate tab, set the parameters, and click the "Process" button.
-
-4.  **Monitor progress:**
-    - Real-time progress bar shows processing status from 0% to 100%
-    - Detailed status messages indicate current processing stage
-    - Progress updates automatically without page refresh
-
-5.  **Download results:**
-    - Download button appears automatically when processing completes
-    - Click to download the generated HDF5 file
-    - Temporary files are automatically cleaned up after download
+- **Fixed** path resolution, error handling, progress tracking in web interface.

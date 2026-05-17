@@ -1,308 +1,484 @@
 """
-样本间 RT 对齐模块
+RT alignment module — streaming, QC-aware.
 
-基于 base peak chromatogram (BPC) 互相关的轻量级 RT 校正：
-1. 每个样本按 1s RT bin 切条，取每条的最大强度离子 → BPC
-2. 分段互相关计算局部 RT 偏移
-3. 样条插值得到连续偏移曲线
-4. 对 h5 中的 rt_indices 应用校正
+Workflow:
+1. Single streaming pass over the H5 file to build a BPC (base peak
+   chromatogram) for every sample. Memory: n_samples × n_bins × 4 bytes ≈ 10 MB.
+2. Use the QC sample whose TIC is closest to the median QC TIC as the
+   reference; run segmented cross-correlation to estimate per-sample local RT
+   offsets (spline / linear interpolation).
+3. Pre-compute an (n_samples × max_rt_bin) offset look-up table.
+4. Second streaming pass to rewrite rt_indices in-place — no full load needed.
 
-设计目标：快速、覆盖全 RT 范围、适用于 Master Image 构建前的预处理
+Design goals:
+- QC samples as alignment reference (standard metabolomics practice).
+- Large-file friendly: a 5–10 GB H5 runs on an 8 GB machine.
+- Writes rt_aligned=True to H5 attributes so downstream tools can skip
+  re-alignment.
 """
 import numpy as np
 import h5py
 from scipy.interpolate import UnivariateSpline
+from tqdm import tqdm
 
 
-def _build_bpc(data, rt_indices, sample_indices, sample_id,
-               storage_rt_precision, bin_size_s=1.0):
-    """构建单个样本的 base peak chromatogram (BPC)
+DEFAULT_CHUNK_SIZE = 50_000_000   # ~200 MB per chunk, safe for 8 GB machines
 
-    将 RT 轴按 bin_size_s 切 bin，每个 bin 取最大强度值。
+
+def _build_all_bpc_streaming(h5_path, bin_size_s=1.0,
+                              chunk_size=DEFAULT_CHUNK_SIZE):
+    """Single streaming pass that builds a BPC for every sample simultaneously.
 
     Args:
-        data: 强度数组
-        rt_indices: h5 RT 索引数组
-        sample_indices: 样本索引数组
-        sample_id: 目标样本 ID
-        storage_rt_precision: h5 存储的 RT 精度（秒/索引）
-        bin_size_s: BPC bin 宽度（秒）
+        h5_path:     Path to the HDF5 file.
+        bin_size_s:  BPC bin width in seconds (default 1 s).
+        chunk_size:  Number of data points read per chunk.
 
     Returns:
-        bpc: 1D 数组，每个元素是该 RT bin 的最大强度
-        bin_edges_idx: bin 边界（h5 索引单位）
+        all_bpc:          ndarray (n_samples, n_bins) float32 — BPC matrix.
+        storage_rt_prec:  float — H5 RT precision (seconds per index unit).
+        n_bins:           int — number of BPC bins.
+        num_samples:      int
+        sample_names:     list[str]
     """
-    mask = sample_indices == sample_id
-    if not np.any(mask):
-        return np.array([]), np.array([])
+    with h5py.File(h5_path, 'r') as f:
+        storage_rt_prec = float(f.attrs['rt_precision'])
+        rt_max          = int(f['shape'][0])
+        sample_ids_raw  = f['sample_id'][:]
+        total_points    = len(f['data'])
 
-    s_data = data[mask].astype(np.float64)
-    s_rt = rt_indices[mask]
+    num_samples  = len(sample_ids_raw)
+    sample_names = [s.decode() if isinstance(s, bytes) else str(s)
+                    for s in sample_ids_raw]
 
-    # h5 索引转 bin
-    bin_width = bin_size_s / storage_rt_precision
-    rt_max = int(rt_indices.max())
-    n_bins = int(np.ceil(rt_max / bin_width)) + 1
+    bin_width = bin_size_s / storage_rt_prec   # bin 宽度（h5 索引单位）
+    n_bins    = int(np.ceil(rt_max / bin_width)) + 1
 
-    bpc = np.zeros(n_bins, dtype=np.float64)
-    bin_idx = (s_rt / bin_width).astype(np.int32)
-    bin_idx = np.clip(bin_idx, 0, n_bins - 1)
+    all_bpc = np.zeros((num_samples, n_bins), dtype=np.float32)
 
-    # 每个 bin 取 max（用 ufunc.at 避免循环）
-    np.maximum.at(bpc, bin_idx, s_data)
+    with h5py.File(h5_path, 'r') as f:
+        n_chunks = (total_points + chunk_size - 1) // chunk_size
+        for start in tqdm(range(0, total_points, chunk_size),
+                          desc="BPC scan", total=n_chunks):
+            end      = min(start + chunk_size, total_points)
+            c_data   = f['data'][start:end].astype(np.float32)
+            c_rt     = f['rt_indices'][start:end]
+            c_sample = f['sample_indices'][start:end].astype(np.int32)
 
-    return bpc
+            c_bin = np.clip((c_rt / bin_width).astype(np.int32), 0, n_bins - 1)
+
+            # vectorised per-(sample, bin) max
+            combined = c_sample.astype(np.int64) * n_bins + c_bin
+            sort_idx = np.lexsort((-c_data, combined))
+            s_comb   = combined[sort_idx]
+            s_data   = c_data[sort_idx]
+
+            uniq_keys, first = np.unique(s_comb, return_index=True)
+            u_data   = s_data[first]
+            u_sid    = (uniq_keys // n_bins).astype(np.int32)
+            u_bin    = (uniq_keys %  n_bins).astype(np.int32)
+
+            improve = u_data > all_bpc[u_sid, u_bin]
+            if np.any(improve):
+                all_bpc[u_sid[improve], u_bin[improve]] = u_data[improve]
+
+    return all_bpc, storage_rt_prec, n_bins, num_samples, sample_names
 
 
-def _segment_xcorr(ref_bpc, query_bpc, segment_size=60, max_lag=30):
-    """分段互相关计算局部 RT 偏移
-
-    将 BPC 分成若干段，每段做互相关找最佳偏移。
+def _segment_xcorr(ref_bpc, query_bpc, segment_bins=60, max_lag_bins=30):
+    """Segmented normalised cross-correlation to estimate local RT offsets.
 
     Args:
-        ref_bpc: 参考样本 BPC
-        query_bpc: 查询样本 BPC
-        segment_size: 每段长度（bin 数，即秒数 if bin=1s）
-        max_lag: 最大搜索偏移（bin 数）
+        ref_bpc:       Reference BPC array.
+        query_bpc:     Query BPC array.
+        segment_bins:  Number of bins per segment.
+        max_lag_bins:  Maximum search lag in bins.
 
     Returns:
-        segment_centers: 每段的中心位置（bin index）
-        segment_shifts: 每段的最佳偏移量（bin 数，正=query 右移到 ref）
+        centers:  Segment centre positions (bin index, float).
+        shifts:   Best-lag per segment (bins; positive = query shifted right
+                  relative to reference).
     """
     n = min(len(ref_bpc), len(query_bpc))
-    if n < segment_size:
-        # 全局互相关
+    segments = []
+    if n < segment_bins:
         segments = [(0, n)]
     else:
-        segments = []
-        for start in range(0, n - segment_size // 2, segment_size):
-            end = min(start + segment_size, n)
-            if end - start >= segment_size // 2:
-                segments.append((start, end))
+        for s in range(0, n - segment_bins // 2, segment_bins):
+            e = min(s + segment_bins, n)
+            if e - s >= segment_bins // 2:
+                segments.append((s, e))
 
     centers = []
-    shifts = []
+    shifts  = []
 
-    for start, end in segments:
-        ref_seg = ref_bpc[start:end]
-        # query 取更宽的范围用于搜索
-        q_start = max(0, start - max_lag)
-        q_end = min(n, end + max_lag)
-        query_wide = query_bpc[q_start:q_end]
+    for s, e in segments:
+        ref_seg  = ref_bpc[s:e]
+        q_s      = max(0, s - max_lag_bins)
+        q_e      = min(n, e + max_lag_bins)
+        q_wide   = query_bpc[q_s:q_e]
 
-        if np.sum(ref_seg) == 0 or np.sum(query_wide) == 0:
-            centers.append((start + end) / 2.0)
+        centers.append((s + e) / 2.0)
+
+        if ref_seg.sum() == 0 or q_wide.sum() == 0:
             shifts.append(0.0)
             continue
 
-        # 归一化互相关
         ref_norm = ref_seg - ref_seg.mean()
-        ref_std = np.std(ref_seg)
+        ref_std  = ref_seg.std()
         if ref_std == 0:
-            centers.append((start + end) / 2.0)
             shifts.append(0.0)
             continue
 
-        best_corr = -1
+        seg_len  = e - s
         best_lag = 0
-        seg_len = end - start
+        best_corr = -1.0
 
-        for lag in range(-max_lag, max_lag + 1):
-            # query 段在 wide 数组中的位置
-            qs = (start + lag) - q_start
+        for lag in range(-max_lag_bins, max_lag_bins + 1):
+            qs = (s + lag) - q_s
             qe = qs + seg_len
-            if qs < 0 or qe > len(query_wide):
+            if qs < 0 or qe > len(q_wide):
                 continue
-            q_seg = query_wide[qs:qe]
+            q_seg  = q_wide[qs:qe]
             q_norm = q_seg - q_seg.mean()
-            q_std = np.std(q_seg)
+            q_std  = q_seg.std()
             if q_std == 0:
                 continue
             corr = np.dot(ref_norm, q_norm) / (ref_std * q_std * seg_len)
             if corr > best_corr:
                 best_corr = corr
-                best_lag = lag
+                best_lag  = lag
 
-        centers.append((start + end) / 2.0)
-        # best_lag > 0 表示 query 右移了，校正需要左移（负值）
+        # best_lag > 0 means query is shifted right by best_lag bins relative
+        # to ref, so we correct by -best_lag.
         shifts.append(float(-best_lag))
 
-    return np.array(centers), np.array(shifts)
+    return np.array(centers, dtype=np.float32), np.array(shifts, dtype=np.float32)
 
 
-def compute_rt_shifts(h5_path, bin_size_s=1.0, segment_size_s=60,
-                      max_shift_s=30, ref_sample=None):
-    """计算每个样本相对于参考的 RT 偏移曲线
-
-    基于 BPC 分段互相关：
-    1. 每个样本构建 1s bin 的 BPC（base peak chromatogram）
-    2. 分 60s 段做互相关，得到局部偏移
-    3. 样条插值得到连续偏移曲线
+def _shifts_to_correction(centers_bin, shifts_bin, rt_max_bin, max_shift_bin=None):
+    """Fit discrete shift points into a continuous correction curve.
 
     Args:
-        h5_path: HDF5 文件路径
-        bin_size_s: BPC bin 宽度（秒），默认 1s
-        segment_size_s: 互相关段长度（秒），默认 60s
-        max_shift_s: 最大搜索偏移（秒），默认 30s
-        ref_sample: 参考样本索引（None 则自动选 TIC 最高的）
+        centers_bin:   Segment centres (H5 index units).
+        shifts_bin:    Shift values (H5 index units).
+        rt_max_bin:    Maximum RT index in the H5 file.
+        max_shift_bin: Maximum allowed shift (H5 index units). Values outside
+                       this range are clipped to suppress spline overshoot.
 
     Returns:
-        dict: {
-            'ref_sample': 参考样本索引,
-            'shifts': list of (rt_grid, shift_values) per sample,
-                      rt_grid 和 shift_values 单位均为 h5 索引,
-            'median_shifts_s': list 每个样本的中位偏移（秒）,
-        }
+        rt_grid:    float32 array of H5 index coordinates.
+        shift_vals: float32 array of corresponding shift values (H5 index units).
     """
-    with h5py.File(h5_path, 'r') as f:
-        data = f['data'][:]
-        rt_idx = f['rt_indices'][:]
-        sample_idx = f['sample_indices'][:]
-        storage_rt_prec = f.attrs['rt_precision']
+    if len(centers_bin) == 0:
+        return np.array([0.0, float(rt_max_bin)], dtype=np.float32), \
+               np.array([0.0, 0.0], dtype=np.float32)
 
-    num_samples = int(sample_idx.max()) + 1
-    bin_width_idx = bin_size_s / storage_rt_prec  # bin 宽度（h5 索引单位）
-    segment_bins = int(segment_size_s / bin_size_s)
-    max_lag_bins = int(max_shift_s / bin_size_s)
-    rt_max = int(rt_idx.max())
+    if len(centers_bin) >= 4:
+        try:
+            spl = UnivariateSpline(
+                centers_bin, shifts_bin,
+                k=min(3, len(centers_bin) - 1),
+                s=len(centers_bin) * 0.25)
+            rt_grid    = np.linspace(0, float(rt_max_bin), 200)
+            shift_vals = spl(rt_grid).astype(np.float32)
+            # Clamp extrapolation at both ends to suppress boundary oscillation.
+            shift_vals[rt_grid < centers_bin[0]]  = shifts_bin[0]
+            shift_vals[rt_grid > centers_bin[-1]] = shifts_bin[-1]
+            if max_shift_bin is not None:
+                shift_vals = np.clip(shift_vals, -max_shift_bin, max_shift_bin)
+            return rt_grid.astype(np.float32), shift_vals
+        except Exception:
+            pass
 
-    # 构建所有样本的 BPC
-    all_bpc = []
-    bpc_sums = []
-    for sid in range(num_samples):
-        bpc = _build_bpc(data, rt_idx, sample_idx, sid,
-                         storage_rt_prec, bin_size_s)
-        all_bpc.append(bpc)
-        bpc_sums.append(np.sum(bpc))
+    if len(centers_bin) >= 2:
+        rt_grid    = np.linspace(0, float(rt_max_bin), 200)
+        shift_vals = np.interp(rt_grid, centers_bin, shifts_bin).astype(np.float32)
+        if max_shift_bin is not None:
+            shift_vals = np.clip(shift_vals, -max_shift_bin, max_shift_bin)
+        return rt_grid.astype(np.float32), shift_vals
 
-    # 选参考样本：TIC 最高的
-    if ref_sample is None:
-        ref_sample = int(np.argmax(bpc_sums))
-    ref_bpc = all_bpc[ref_sample]
-    print(f"Reference sample: {ref_sample} (TIC = {bpc_sums[ref_sample]:.0f})")
+    med = float(np.median(shifts_bin))
+    if max_shift_bin is not None:
+        med = float(np.clip(med, -max_shift_bin, max_shift_bin))
+    return (np.array([0.0, float(rt_max_bin)], dtype=np.float32),
+            np.array([med, med], dtype=np.float32))
 
-    shifts = []
-    median_shifts_s = []
 
-    for sid in range(num_samples):
-        if sid == ref_sample:
-            shifts.append((np.array([0.0, float(rt_max)]), np.array([0.0, 0.0])))
-            median_shifts_s.append(0.0)
-            continue
+def compute_rt_corrections(h5_path,
+                           qc_sample_names=None,
+                           bin_size_s=1.0,
+                           segment_size_s=60.0,
+                           max_shift_s=30.0,
+                           chunk_size=DEFAULT_CHUNK_SIZE):
+    """Compute per-sample RT correction curves using BPC cross-correlation.
 
-        # 分段互相关
-        centers, seg_shifts = _segment_xcorr(
-            ref_bpc, all_bpc[sid], segment_bins, max_lag_bins)
+    Uses QC samples (or the highest-TIC sample when no QC list is provided) as
+    the alignment reference.
 
-        if len(centers) == 0:
-            shifts.append((np.array([0.0, float(rt_max)]), np.array([0.0, 0.0])))
-            median_shifts_s.append(0.0)
-            continue
+    Args:
+        h5_path:          Path to the HDF5 file.
+        qc_sample_names:  List of QC sample names matching H5 sample_id values.
+                          None → highest-TIC sample is used as reference.
+        bin_size_s:       BPC bin width in seconds (default 1 s).
+        segment_size_s:   Cross-correlation segment length in seconds (default 60 s).
+        max_shift_s:      Maximum search lag in seconds (default 30 s).
+        chunk_size:       Streaming read chunk size.
 
-        # bin 单位 → h5 索引单位
-        centers_idx = centers * bin_width_idx
-        shifts_idx = seg_shifts * bin_width_idx
+    Returns:
+        dict with keys:
+          'ref_sample_idx':  int — H5 index of the reference sample.
+          'ref_sample_name': str — name of the reference sample.
+          'corrections':     list of (rt_grid, shift_vals) tuples per sample;
+                             both arrays are float32 in H5 RT index units.
+          'median_shifts_s': list[float] — median shift per sample in seconds.
+    """
+    print("RT alignment: building BPC for all samples (streaming)...")
+    all_bpc, storage_rt_prec, n_bins, num_samples, sample_names = \
+        _build_all_bpc_streaming(h5_path, bin_size_s, chunk_size)
 
-        # 样条插值得到连续偏移曲线
-        if len(centers_idx) >= 4:
-            try:
-                spline = UnivariateSpline(
-                    centers_idx, shifts_idx,
-                    k=min(3, len(centers_idx) - 1),
-                    s=len(centers_idx) * (bin_width_idx * 0.5) ** 2)
-                rt_grid = np.linspace(0, float(rt_max), 200)
-                shift_vals = spline(rt_grid)
-            except Exception:
-                median_s = float(np.median(shifts_idx))
-                rt_grid = np.array([0.0, float(rt_max)])
-                shift_vals = np.array([median_s, median_s])
-        elif len(centers_idx) >= 2:
-            # 线性插值
-            rt_grid = np.linspace(0, float(rt_max), 200)
-            shift_vals = np.interp(rt_grid, centers_idx, shifts_idx)
+    bpc_tic   = all_bpc.sum(axis=1)
+    bin_width = bin_size_s / storage_rt_prec
+    seg_bins  = max(4, int(segment_size_s / bin_size_s))
+    lag_bins  = max(2, int(max_shift_s   / bin_size_s))
+    rt_max    = n_bins * bin_width
+
+    name_to_idx = {n: i for i, n in enumerate(sample_names)}
+
+    if qc_sample_names:
+        qc_indices = [name_to_idx[n] for n in qc_sample_names
+                      if n in name_to_idx]
+        if len(qc_indices) == 0:
+            print("  Warning: no QC samples matched in H5; "
+                  "falling back to global TIC maximum")
+            ref_idx = int(np.argmax(bpc_tic))
         else:
-            median_s = float(np.median(shifts_idx))
-            rt_grid = np.array([0.0, float(rt_max)])
-            shift_vals = np.array([median_s, median_s])
+            qc_tics     = bpc_tic[qc_indices]
+            median_tic  = np.median(qc_tics)
+            rel_idx     = int(np.argmin(np.abs(qc_tics - median_tic)))
+            ref_idx     = qc_indices[rel_idx]
+            print(f"  {len(qc_indices)} QC samples found; "
+                  f"reference = '{sample_names[ref_idx]}' "
+                  f"(median QC TIC = {median_tic:.2e})")
+    else:
+        ref_idx = int(np.argmax(bpc_tic))
+        print(f"  No QC list provided; reference = "
+              f"'{sample_names[ref_idx]}' (highest TIC = {bpc_tic[ref_idx]:.2e})")
 
-        shifts.append((rt_grid, shift_vals))
+    ref_bpc   = all_bpc[ref_idx]
+    ref_tic   = float(bpc_tic[ref_idx])
+    # Cross-correlation is unreliable for near-blank samples; skip when TIC < 5 % of reference.
+    min_tic   = ref_tic * 0.05
+
+    corrections   = []
+    median_shifts = []
+    n_skipped     = 0
+
+    zero_correction = (np.array([0.0, rt_max], dtype=np.float32),
+                       np.array([0.0, 0.0],   dtype=np.float32))
+
+    for sid in range(num_samples):
+        if sid == ref_idx:
+            corrections.append(zero_correction)
+            median_shifts.append(0.0)
+            continue
+
+        if bpc_tic[sid] < min_tic:
+            corrections.append(zero_correction)
+            median_shifts.append(0.0)
+            n_skipped += 1
+            continue
+
+        centers, seg_shifts = _segment_xcorr(
+            ref_bpc, all_bpc[sid], seg_bins, lag_bins)
+
+        centers_idx    = (centers    * bin_width).astype(np.float32)
+        seg_shifts_idx = (seg_shifts * bin_width).astype(np.float32)
+
+        max_shift_idx = float(lag_bins * bin_width)
+        rt_grid, shift_vals = _shifts_to_correction(
+            centers_idx, seg_shifts_idx, int(rt_max),
+            max_shift_bin=max_shift_idx)
+
+        corrections.append((rt_grid, shift_vals))
         med_s = float(np.median(seg_shifts)) * bin_size_s
-        median_shifts_s.append(med_s)
-        print(f"  Sample {sid}: median shift = {med_s:+.1f}s, "
-              f"range = {seg_shifts.min() * bin_size_s:.1f}~{seg_shifts.max() * bin_size_s:.1f}s")
+        median_shifts.append(med_s)
+
+    if n_skipped:
+        print(f"  {n_skipped} low-TIC samples skipped (TIC < {min_tic:.1e}); "
+              f"zero correction applied")
+
+    nonzero = [abs(s) for s in median_shifts if s != 0]
+    if nonzero:
+        print(f"  Shift summary: median |shift| = {np.median(nonzero):.2f}s, "
+              f"max = {max(nonzero):.2f}s  "
+              f"({sum(1 for s in nonzero if abs(s) > 1.0)} samples shifted >1s)")
 
     return {
-        'ref_sample': ref_sample,
-        'shifts': shifts,
-        'median_shifts_s': median_shifts_s,
+        'ref_sample_idx':  ref_idx,
+        'ref_sample_name': sample_names[ref_idx],
+        'corrections':     corrections,
+        'median_shifts_s': median_shifts,
+        'max_shift_bins':  float(lag_bins * bin_width),
     }
 
 
-def align_h5(h5_path, output_path=None, bin_size_s=1.0,
-             segment_size_s=60, max_shift_s=30, ref_sample=None):
-    """对 h5 文件做 RT 对齐，输出新的对齐后 h5 文件
+def apply_rt_corrections(h5_path, corrections_dict,
+                         chunk_size=DEFAULT_CHUNK_SIZE,
+                         inplace=True, output_path=None):
+    """Apply RT corrections to an HDF5 file.
+
+    Reads rt_indices in streaming chunks, adds per-sample offsets, and writes
+    the corrected values back to the file. Supports in-place modification or
+    writing to a new file.
 
     Args:
-        h5_path: 输入 HDF5 文件路径
-        output_path: 输出路径（None 则覆盖原文件）
-        bin_size_s: BPC bin 宽度（秒）
-        segment_size_s: 互相关段长度（秒）
-        max_shift_s: 最大搜索偏移（秒）
-        ref_sample: 参考样本索引
+        h5_path:          Path to the input HDF5 file.
+        corrections_dict: Return value of ``compute_rt_corrections()``.
+        chunk_size:       Streaming chunk size (number of data points).
+        inplace:          True → rewrite rt_indices in-place (no data copy).
+        output_path:      Destination path when inplace=False; None overwrites
+                          the source file.
 
     Returns:
-        dict: 对齐统计信息
+        str: Path to the file that was written.
     """
-    alignment = compute_rt_shifts(h5_path, bin_size_s, segment_size_s,
-                                  max_shift_s, ref_sample)
+    corrections = corrections_dict['corrections']
+    num_samples = len(corrections)
 
     with h5py.File(h5_path, 'r') as f:
-        data = f['data'][:]
-        rt_idx = f['rt_indices'][:]
-        mz_idx = f['mz_indices'][:]
-        sample_idx = f['sample_indices'][:]
-        shape = f['shape'][:]
-        attrs = dict(f.attrs)
-        other_datasets = {}
-        for key in f.keys():
-            if key not in ['data', 'rt_indices', 'mz_indices',
-                           'sample_indices', 'shape']:
-                other_datasets[key] = f[key][:]
+        rt_max = int(f['shape'][0])
 
-    storage_rt_prec = attrs['rt_precision']
-    corrected_rt = rt_idx.astype(np.float64).copy()
-    num_samples = int(sample_idx.max()) + 1
-
-    for sid in range(num_samples):
-        mask = sample_idx == sid
-        if not np.any(mask):
+    # Pre-compute full-resolution offset look-up table: (num_samples × rt_max) float32.
+    # Typical footprint: 236 × 9597 × 4 bytes ≈ 9 MB.
+    rt_axis        = np.arange(rt_max, dtype=np.float32)
+    offset_table   = np.zeros((num_samples, rt_max), dtype=np.float32)
+    for sid, (rt_grid, shift_vals) in enumerate(corrections):
+        if np.all(shift_vals == 0):
             continue
-        rt_grid, shift_vals = alignment['shifts'][sid]
-        sample_rt = rt_idx[mask].astype(np.float64)
-        shift = np.interp(sample_rt, rt_grid, shift_vals)
-        corrected_rt[mask] = sample_rt + shift
+        offset_table[sid] = np.interp(rt_axis, rt_grid, shift_vals,
+                                      left=float(shift_vals[0]),
+                                      right=float(shift_vals[-1]))
 
-    corrected_rt = np.clip(corrected_rt, 0, shape[0] - 1)
-    corrected_rt_int = np.round(corrected_rt).astype(np.int32)
+    # Final safety clip against spline oscillation producing extreme offsets.
+    max_shift_bins = corrections_dict.get('max_shift_bins', None)
+    if max_shift_bins is not None and max_shift_bins > 0:
+        offset_table = np.clip(offset_table, -max_shift_bins, max_shift_bins)
 
-    if output_path is None:
-        output_path = h5_path
+    max_abs = np.abs(offset_table).max()
+    with h5py.File(h5_path, 'r') as _f:
+        _storage_rt_prec = float(_f.attrs.get('rt_precision', 0.1))
+    print(f"  Offset table built: max correction = {max_abs:.1f} bins "
+          f"= {max_abs * _storage_rt_prec:.2f}s  "
+          f"(at {_storage_rt_prec}s storage precision)")
 
-    with h5py.File(output_path, 'w') as f:
-        f.create_dataset('data', data=data, compression='gzip')
-        f.create_dataset('rt_indices', data=corrected_rt_int, compression='gzip')
-        f.create_dataset('mz_indices', data=mz_idx, compression='gzip')
-        f.create_dataset('sample_indices', data=sample_idx, compression='gzip')
-        f.create_dataset('shape', data=shape)
-        for key, val in other_datasets.items():
-            f.create_dataset(key, data=val)
-        for key, val in attrs.items():
-            f.attrs[key] = val
-        f.attrs['aligned'] = True
-        f.attrs['alignment_ref_sample'] = alignment['ref_sample']
+    if inplace:
+        # Streaming in-place rewrite of rt_indices.
+        with h5py.File(h5_path, 'r+') as f:
+            total_points = len(f['data'])
+            n_chunks = (total_points + chunk_size - 1) // chunk_size
+            for start in tqdm(range(0, total_points, chunk_size),
+                              desc="Applying RT correction", total=n_chunks):
+                end       = min(start + chunk_size, total_points)
+                c_rt      = f['rt_indices'][start:end]
+                c_sample  = f['sample_indices'][start:end].astype(np.int32)
 
-    avg_shift = np.mean([abs(s) for s in alignment['median_shifts_s']])
-    print(f"\nAlignment complete → {output_path}")
-    print(f"  Average |median shift|: {avg_shift:.1f}s")
+                safe_sid  = np.clip(c_sample, 0, num_samples - 1)
+                safe_rt   = np.clip(c_rt, 0, rt_max - 1)
+                offsets   = offset_table[safe_sid, safe_rt]
 
-    return alignment
+                corrected = np.clip(
+                    np.round(c_rt.astype(np.float32) + offsets).astype(np.int32),
+                    0, rt_max - 1)
+                f['rt_indices'][start:end] = corrected
+
+            f.attrs['rt_aligned']          = True
+            f.attrs['rt_aligned_ref_idx']  = corrections_dict['ref_sample_idx']
+            f.attrs['rt_aligned_ref_name'] = corrections_dict['ref_sample_name']
+
+        return h5_path
+
+    else:
+        # Write a new file: copy all datasets, substitute corrected rt_indices.
+        if output_path is None:
+            output_path = h5_path
+
+        with h5py.File(h5_path, 'r') as src, \
+             h5py.File(output_path, 'w') as dst:
+            for k, v in src.attrs.items():
+                dst.attrs[k] = v
+
+            total_points = len(src['data'])
+            n_chunks = (total_points + chunk_size - 1) // chunk_size
+
+            dst.create_dataset('data',           data=src['data'][:],
+                               compression='lzf', chunks=True)
+            dst.create_dataset('mz_indices',     data=src['mz_indices'][:],
+                               compression='lzf', chunks=True)
+            dst.create_dataset('sample_indices', data=src['sample_indices'][:],
+                               compression='lzf', chunks=True)
+
+            rt_ds = dst.create_dataset(
+                'rt_indices', shape=(total_points,), dtype=np.int32,
+                compression='lzf', chunks=True)
+            for start in tqdm(range(0, total_points, chunk_size),
+                              desc="Writing corrected rt_indices", total=n_chunks):
+                end      = min(start + chunk_size, total_points)
+                c_rt     = src['rt_indices'][start:end]
+                c_sample = src['sample_indices'][start:end].astype(np.int32)
+                safe_sid = np.clip(c_sample, 0, num_samples - 1)
+                safe_rt  = np.clip(c_rt,     0, rt_max - 1)
+                offsets  = offset_table[safe_sid, safe_rt]
+                corrected = np.clip(
+                    np.round(c_rt.astype(np.float32) + offsets).astype(np.int32),
+                    0, rt_max - 1)
+                rt_ds[start:end] = corrected
+
+            skip = {'data', 'rt_indices', 'mz_indices', 'sample_indices'}
+            for key in src.keys():
+                if key not in skip:
+                    dst.create_dataset(key, data=src[key][:])
+
+            dst.attrs['rt_aligned']          = True
+            dst.attrs['rt_aligned_ref_idx']  = corrections_dict['ref_sample_idx']
+            dst.attrs['rt_aligned_ref_name'] = corrections_dict['ref_sample_name']
+
+        return output_path
+
+
+def align_rt(h5_path,
+             qc_sample_names=None,
+             output_path=None,
+             bin_size_s=1.0,
+             segment_size_s=60.0,
+             max_shift_s=30.0,
+             chunk_size=DEFAULT_CHUNK_SIZE):
+    """One-stop RT alignment: compute corrections and apply them to the H5 file.
+
+    Args:
+        h5_path:          Path to the input HDF5 file.
+        qc_sample_names:  QC sample name list (None → highest-TIC sample used).
+        output_path:      Output path (None → in-place modification).
+        bin_size_s:       BPC bin width in seconds.
+        segment_size_s:   Cross-correlation segment length in seconds.
+        max_shift_s:      Maximum allowed shift in seconds.
+        chunk_size:       Streaming read chunk size.
+
+    Returns:
+        str: Path to the file that was written.
+    """
+    print(f"=== RT Alignment: {h5_path} ===")
+    inplace = (output_path is None)
+
+    corr = compute_rt_corrections(
+        h5_path, qc_sample_names,
+        bin_size_s, segment_size_s, max_shift_s, chunk_size)
+
+    out = apply_rt_corrections(
+        h5_path, corr,
+        chunk_size=chunk_size,
+        inplace=inplace,
+        output_path=output_path)
+
+    print(f"RT alignment complete → {out}")
+    return out

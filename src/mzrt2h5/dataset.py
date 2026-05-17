@@ -204,7 +204,7 @@ class DynamicSparseH5Dataset(Dataset):
                         if isinstance(value, bytes):
                             try:
                                 labels_dict[key] = torch.tensor(float(value.decode('utf-8')), dtype=torch.float32)
-                            except:
+                            except (TypeError, ValueError):
                                 labels_dict[key] = torch.tensor(0.0, dtype=torch.float32)
                         else:
                             labels_dict[key] = torch.tensor(0.0, dtype=torch.float32)

@@ -92,22 +92,62 @@ def analyze_ms1_ms2_response(mzml_path, output_csv_path):
     print(f"Analysis saved to {output_csv_path}")
     return df
 
-def load_metadata_from_file(file_path, sample_id_col, separator=','):
+def load_metadata_from_file(file_path, sample_id_col='Sample Name', separator=',',
+                            format=None):
     """
-    Loads metadata from a CSV or TSV file into a dictionary.
+    Loads metadata from a CSV, TSV, mwTab, or ISA-Tab file into a dictionary.
+
+    Auto-detects format when ``format=None``:
+      - Files ending in ``.txt`` containing ``SUBJECT_SAMPLE_FACTORS`` → mwTab
+      - Directories or files matching ``s_*.txt`` / ``a_*.txt`` → ISA-Tab
+      - Everything else → CSV/TSV (uses ``separator``)
 
     Args:
-        file_path (str): Path to the metadata file.
-        sample_id_col (str): The column name containing the unique sample IDs.
-        separator (str): The separator used in the file (e.g., ',', '\t'). 
-                         Defaults to comma. Using a specific separator is more robust
-                         than relying on whitespace.
-    
+        file_path (str): Path to the metadata file or directory (ISA-Tab).
+        sample_id_col (str): Column name for sample IDs (CSV/TSV only).
+        separator (str): Separator for CSV/TSV files.
+        format (str, optional): Force format: ``'csv'``, ``'mwtab'``, or ``'isatab'``.
+
     Returns:
         dict: A dictionary mapping sample IDs to their metadata.
     """
+    if format is None:
+        format = _detect_metadata_format(file_path)
+
+    if format == 'mwtab':
+        return load_metadata_from_mwtab(file_path)
+    elif format == 'isatab':
+        return load_metadata_from_isatab(file_path)
+    else:
+        return _load_metadata_csv(file_path, sample_id_col, separator)
+
+
+def _detect_metadata_format(file_path):
+    """Auto-detect metadata file format."""
+    if os.path.isdir(file_path):
+        return 'isatab'
+
+    base = os.path.basename(file_path)
+    if base.startswith('s_') or base.startswith('a_'):
+        return 'isatab'
+
+    if file_path.endswith('.txt'):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.startswith('SUBJECT_SAMPLE_FACTORS'):
+                        return 'mwtab'
+                    if line.startswith('#METABOLOMICS WORKBENCH'):
+                        return 'mwtab'
+        except Exception:
+            pass
+
+    return 'csv'
+
+
+def _load_metadata_csv(file_path, sample_id_col, separator=','):
+    """Load metadata from a CSV or TSV file."""
     try:
-        # Using a specific separator like ',' or '\t' is generally safer than '\s+'
         df = pd.read_csv(file_path, sep=separator)
     except FileNotFoundError:
         raise FileNotFoundError(f"Error: Metadata file not found at {file_path}")
@@ -116,11 +156,198 @@ def load_metadata_from_file(file_path, sample_id_col, separator=','):
 
     if sample_id_col not in df.columns:
         raise ValueError(f"Error: The specified sample ID column '{sample_id_col}' was not found in the metadata file.")
-        
-    # Convert all metadata to a dictionary for quick lookups
-    metadata_lookup = df.set_index(sample_id_col).to_dict('index')    
-    
+
+    metadata_lookup = df.set_index(sample_id_col).to_dict('index')
     return metadata_lookup
+
+
+def load_metadata_from_mwtab(file_path):
+    """
+    Loads metadata from a Metabolomics Workbench mwTab file.
+
+    Parses the SUBJECT_SAMPLE_FACTORS section. Each line has tab-separated
+    columns: section_keyword, subject_id, sample_id, factors, [additional_data].
+    Factors are pipe-delimited ``key:value`` pairs; additional data uses ``key=value``.
+
+    Args:
+        file_path (str): Path to the mwTab file.
+
+    Returns:
+        dict: A dictionary mapping sample IDs to their metadata.
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"mwTab file not found at {file_path}")
+
+    records = {}
+    in_ssf = False
+
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.rstrip('\n\r')
+
+            if line.startswith('SUBJECT_SAMPLE_FACTORS'):
+                in_ssf = True
+                parts = line.split('\t')
+                if len(parts) < 4:
+                    continue
+
+                subject_id = parts[1].strip()
+                sample_id = parts[2].strip()
+                factors_str = parts[3].strip() if len(parts) > 3 else ''
+                additional_str = parts[4].strip() if len(parts) > 4 else ''
+
+                record = {}
+                if subject_id and subject_id != '-':
+                    record['subject_id'] = subject_id
+
+                for pair in factors_str.split('|'):
+                    pair = pair.strip()
+                    if ':' in pair:
+                        k, v = pair.split(':', 1)
+                        record[k.strip()] = v.strip()
+
+                # Additional data uses key=value separated by | or ;
+                if additional_str:
+                    for sep in ('|', ';'):
+                        if sep in additional_str:
+                            break
+                    for pair in additional_str.split(sep):
+                        pair = pair.strip()
+                        if '=' in pair:
+                            k, v = pair.split('=', 1)
+                            record[k.strip()] = v.strip()
+
+                if sample_id:
+                    records[sample_id] = record
+
+            elif in_ssf and not line.startswith('SUBJECT_SAMPLE_FACTORS'):
+                if line.startswith('#') or line.strip() == '':
+                    in_ssf = False
+
+    if not records:
+        raise ValueError("No SUBJECT_SAMPLE_FACTORS entries found in the mwTab file.")
+
+    # Re-key by RAW_FILE_NAME (without extension) when available,
+    # so entries match mzML filenames on disk. Fall back to sample_id.
+    metadata = {}
+    for sample_id, record in records.items():
+        raw_file = record.pop('RAW_FILE_NAME', None)
+        if raw_file:
+            file_key = os.path.splitext(os.path.basename(raw_file))[0]
+            record['sample_id'] = sample_id
+        else:
+            file_key = sample_id
+        metadata[file_key] = record
+
+    print(f"Loaded {len(metadata)} samples from mwTab file.")
+    return metadata
+
+
+def load_metadata_from_isatab(file_path):
+    """
+    Loads metadata from MetaboLights ISA-Tab files.
+
+    Accepts either:
+      - A directory containing ``s_*.txt`` and ``a_*.txt`` files
+      - A single ``s_*.txt`` or ``a_*.txt`` file (the companion is found
+        automatically in the same directory)
+
+    The study file provides sample characteristics and factor values.
+    The assay file provides the mapping from sample names to raw data filenames
+    (the ``Raw Spectral Data File`` column).
+
+    The returned dictionary is keyed by mzML filename (without extension),
+    so it can be matched directly against mzML filenames on disk.
+
+    Args:
+        file_path (str): Path to ISA-Tab directory or an ``s_*/a_*`` file.
+
+    Returns:
+        dict: A dictionary mapping mzML filenames (no extension) to metadata.
+    """
+    if os.path.isdir(file_path):
+        search_dir = file_path
+    else:
+        search_dir = os.path.dirname(file_path)
+
+    s_files = sorted([f for f in os.listdir(search_dir) if f.startswith('s_') and f.endswith('.txt')])
+    a_files = sorted([f for f in os.listdir(search_dir) if f.startswith('a_') and f.endswith('.txt')])
+
+    if not s_files and not a_files:
+        raise FileNotFoundError(f"No ISA-Tab study (s_*.txt) or assay (a_*.txt) files found in {search_dir}")
+
+    study_df = None
+    if s_files:
+        study_df = pd.read_csv(os.path.join(search_dir, s_files[0]), sep='\t')
+
+    assay_df = None
+    if a_files:
+        assay_df = pd.read_csv(os.path.join(search_dir, a_files[0]), sep='\t')
+
+    # Extract useful columns from study file
+    study_meta = {}
+    if study_df is not None and 'Sample Name' in study_df.columns:
+        useful_cols = [c for c in study_df.columns
+                       if c.startswith('Characteristics[') or c.startswith('Factor Value[')
+                       or c in ('Source Name', 'Sample Name', 'Material Type')]
+        for _, row in study_df[useful_cols].iterrows():
+            sample_name = str(row['Sample Name'])
+            record = {}
+            for col in useful_cols:
+                if col == 'Sample Name':
+                    continue
+                val = row[col]
+                if pd.notna(val):
+                    clean_col = col.replace('Characteristics[', '').replace('Factor Value[', '').rstrip(']')
+                    record[clean_col] = str(val)
+            study_meta[sample_name] = record
+
+    # Build mapping from sample name to raw filename using assay file
+    sample_to_file = {}
+    if assay_df is not None:
+        raw_col = None
+        for c in assay_df.columns:
+            if 'raw' in c.lower() and 'file' in c.lower():
+                raw_col = c
+                break
+        if raw_col and 'Sample Name' in assay_df.columns:
+            for _, row in assay_df.iterrows():
+                sample_name = str(row['Sample Name'])
+                raw_file = str(row[raw_col]) if pd.notna(row[raw_col]) else ''
+                if raw_file:
+                    sample_to_file[sample_name] = raw_file
+
+            # Also extract assay-level metadata
+            assay_cols = [c for c in assay_df.columns
+                          if c.startswith('Parameter Value[') or c == 'MS Assay Name']
+            if assay_cols:
+                for _, row in assay_df.iterrows():
+                    sample_name = str(row['Sample Name'])
+                    if sample_name in study_meta:
+                        for col in assay_cols:
+                            val = row[col]
+                            if pd.notna(val):
+                                clean_col = col.replace('Parameter Value[', '').rstrip(']')
+                                study_meta[sample_name][clean_col] = str(val)
+
+    # Re-key by mzML filename (without extension) for matching
+    metadata = {}
+    if sample_to_file:
+        for sample_name, raw_file in sample_to_file.items():
+            file_key = os.path.basename(raw_file)
+            file_key = os.path.splitext(file_key)[0]
+            record = study_meta.get(sample_name, {})
+            record['sample_name'] = sample_name
+            metadata[file_key] = record
+    else:
+        # No assay file: key directly by sample name (user will match by filename)
+        metadata = study_meta
+
+    if not metadata:
+        raise ValueError("No sample metadata could be extracted from the ISA-Tab files.")
+
+    print(f"Loaded {len(metadata)} samples from ISA-Tab files.")
+    return metadata
     
 def process_mzml_to_sparse(file, rt_precision, mz_precision, mz_range=None, rt_range=None, min_rel_intensity=None):
     """
@@ -228,9 +455,10 @@ def process_mzml_to_sparse(file, rt_precision, mz_precision, mz_range=None, rt_r
     return final_sparse_matrix, rt_range, mz_range
 
 def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
-                              metadata_csv_path,      
+                              metadata_csv_path,
                               sample_id_col='Sample Name',
                               separator=',',
+                              format=None,
                               mz_range=None, rt_range=None,
                               min_rel_intensity=None,
                               progress_callback=None):
@@ -243,17 +471,18 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
         save_path (str): Path to save the output .h5 file.
         rt_precision (float): Bin size for the retention time axis.
         mz_precision (float): Bin size for the m/z axis.
-        metadata_csv_path (str): Path to the metadata CSV file.
-        sample_id_col (str): Column name for sample IDs in the metadata.
-        separator (str): Separator for the metadata file (e.g., ',').
+        metadata_csv_path (str): Path to the metadata file (CSV, mwTab, or ISA-Tab dir).
+        sample_id_col (str): Column name for sample IDs (CSV/TSV only).
+        separator (str): Separator for CSV/TSV metadata files.
+        format (str, optional): Metadata format: 'csv', 'mwtab', 'isatab', or None (auto).
         mz_range (tuple, optional): Fixed (min, max) m/z range.
         rt_range (tuple, optional): Fixed (min, max) RT range.
         min_rel_intensity (float, optional): Keep only points >= this fraction of scan base peak.
         progress_callback (function, optional): Callback function to report progress updates.
     """
-    
-    # Load metadata from the provided CSV file
-    metadata_lookup = load_metadata_from_file(metadata_csv_path, sample_id_col, separator)
+
+    # Load metadata from the provided file
+    metadata_lookup = load_metadata_from_file(metadata_csv_path, sample_id_col, separator, format=format)
     print(f"Successfully loaded {len(metadata_lookup)} metadata records from {metadata_csv_path}.")
     if progress_callback:
         progress_callback({'step': 'loading_metadata', 'status': 'completed', 'message': 'Loaded metadata', 'progress': 10})
@@ -303,10 +532,13 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
 
     with h5py.File(save_path, 'w') as f:
         # Create resizable datasets to append data from each file
-        dset_data = f.create_dataset('data', shape=(0,), maxshape=(None,), dtype=np.int32, compression='gzip')
-        dset_rt = f.create_dataset('rt_indices', shape=(0,), maxshape=(None,), dtype=np.int32, compression='gzip')
-        dset_mz = f.create_dataset('mz_indices', shape=(0,), maxshape=(None,), dtype=np.int32, compression='gzip')
-        dset_sample = f.create_dataset('sample_indices', shape=(0,), maxshape=(None,), dtype=np.int32, compression='gzip')
+        # lzf decompresses 5–10× faster than gzip; chunk size of 100 000 avoids
+        # the ~50 000 decompress calls that the default chunk size of 1024 would need.
+        _h5_kw = dict(dtype=np.int32, compression='lzf', chunks=(100000,))
+        dset_data = f.create_dataset('data', shape=(0,), maxshape=(None,), **_h5_kw)
+        dset_rt = f.create_dataset('rt_indices', shape=(0,), maxshape=(None,), **_h5_kw)
+        dset_mz = f.create_dataset('mz_indices', shape=(0,), maxshape=(None,), **_h5_kw)
+        dset_sample = f.create_dataset('sample_indices', shape=(0,), maxshape=(None,), **_h5_kw)
 
         if progress_callback:
             progress_callback({'step': 'initializing_hdf5', 'status': 'completed', 'message': 'Initialized HDF5 file', 'progress': 30})
@@ -459,10 +691,11 @@ def save_single_mzml_as_sparse_h5(mzml_file_path, save_path, rt_precision, mz_pr
             rt_indices = sparse_matrix.row
             mz_indices = sparse_matrix.col
 
-            f.create_dataset('data', data=intensities, compression='gzip')
-            f.create_dataset('rt_indices', data=rt_indices, compression='gzip')
-            f.create_dataset('mz_indices', data=mz_indices, compression='gzip')
-            f.create_dataset('sample_indices', data=np.zeros(len(intensities), dtype=np.int32), compression='gzip')
+            _h5_kw = dict(compression='lzf', chunks=(100000,))
+            f.create_dataset('data', data=intensities, **_h5_kw)
+            f.create_dataset('rt_indices', data=rt_indices, **_h5_kw)
+            f.create_dataset('mz_indices', data=mz_indices, **_h5_kw)
+            f.create_dataset('sample_indices', data=np.zeros(len(intensities), dtype=np.int32), **_h5_kw)
             f.create_dataset('sample_name', data=np.array([sample_name], dtype='S'))
             f.create_dataset('shape', data=final_shape)
 
@@ -475,6 +708,7 @@ def save_single_mzml_as_sparse_h5(mzml_file_path, save_path, rt_precision, mz_pr
             
     except Exception as e:
         print(f"ERROR writing HDF5 file: {e}")
+        raise
 
     # Only report completion if the file was actually created
     if os.path.exists(save_path):
@@ -485,3 +719,51 @@ def save_single_mzml_as_sparse_h5(mzml_file_path, save_path, rt_precision, mz_pr
         if progress_callback:
             progress_callback({'step': 'error', 'status': 'error', 'message': 'Failed to create HDF5 file', 'progress': -1})
         print(f"ERROR: HDF5 file was not created at {save_path}")
+
+
+def repack_h5(input_path, output_path=None, compression='lzf', chunk_size=100000,
+              copy_chunk=10_000_000):
+    """Repack an existing HDF5 file with a new compression codec and chunk size.
+
+    Typical use: convert an older gzip-compressed file to lzf for faster reads
+    (lzf decompresses 3–5× faster than gzip).
+
+    Args:
+        input_path:  Path to the source HDF5 file.
+        output_path: Destination path (default: input filename with ``_repacked`` suffix).
+        compression: Compression codec: ``'lzf'`` (fast reads), ``'gzip'`` (small
+                     files), or ``None`` (no compression).
+        chunk_size:  HDF5 dataset chunk size in number of elements.
+        copy_chunk:  Number of data points copied per iteration.
+
+    Returns:
+        str: Path to the repacked output file.
+    """
+    if output_path is None:
+        base, ext = os.path.splitext(input_path)
+        output_path = f"{base}_repacked{ext}"
+
+    kw = dict(compression=compression, chunks=(chunk_size,))
+    data_names = ['data', 'rt_indices', 'mz_indices', 'sample_indices']
+
+    with h5py.File(input_path, 'r') as fin, h5py.File(output_path, 'w') as fout:
+        total = len(fin['data'])
+        for name in data_names:
+            fout.create_dataset(name, shape=(total,), dtype=fin[name].dtype, **kw)
+
+        for start in tqdm(range(0, total, copy_chunk), desc="Repacking",
+                          total=(total + copy_chunk - 1) // copy_chunk):
+            end = min(start + copy_chunk, total)
+            for name in data_names:
+                fout[name][start:end] = fin[name][start:end]
+
+        for name in fin.keys():
+            if name not in data_names:
+                fin.copy(name, fout)
+        for k, v in fin.attrs.items():
+            fout.attrs[k] = v
+
+    in_size = os.path.getsize(input_path) / 1e9
+    out_size = os.path.getsize(output_path) / 1e9
+    print(f"Repacked: {in_size:.2f} GB → {out_size:.2f} GB ({compression})")
+    return output_path

@@ -11,7 +11,7 @@ current_file_dir = os.path.dirname(__file__)
 src_path = os.path.abspath(os.path.join(current_file_dir, '..', 'src'))
 sys.path.insert(0, src_path)
 
-from flask import Flask, request, render_template, send_file, after_this_request, Response
+from flask import Flask, request, render_template, send_file, after_this_request, Response, jsonify
 from werkzeug.utils import secure_filename
 from mzrt2h5 import save_dataset_as_sparse_h5, save_single_mzml_as_sparse_h5, generate_simulation_data
 
@@ -42,18 +42,19 @@ progress_lock = Lock()
 @app.route('/progress/<task_id>')
 def progress_stream(task_id):
     def generate():
-        while True:
+        max_polls = 7200  # 1 hour at 0.5s intervals
+        for _ in range(max_polls):
             with progress_lock:
                 progress = progress_updates.get(task_id, {})
-            
-            if 'completed' in progress and progress['completed']:
+
+            if progress.get('status') in ('completed', 'error'):
                 yield f"data: {json.dumps(progress)}\n\n"
                 break
-            
+
             if progress:
                 yield f"data: {json.dumps(progress)}\n\n"
             time.sleep(0.5)
-    
+
     return Response(generate(), content_type='text/event-stream')
 
 @app.route('/download/<task_id>')
@@ -309,21 +310,23 @@ def process_single_file():
 @app.route('/download_file')
 def download_simulation_file():
     import urllib.parse
-    from flask import send_file
-    
+
     file_path = request.args.get('path')
     if not file_path:
         return "File path not provided", 400
-    
-    # Decode URL-encoded path
+
     file_path = urllib.parse.unquote(file_path)
-    
-    # Check if file exists
-    if not os.path.exists(file_path):
-        return f"File not found: {file_path}", 404
-    
-    # Return file as attachment
-    return send_file(file_path, as_attachment=True)
+
+    # Prevent path traversal: only allow files under UPLOAD_FOLDER
+    real_path = os.path.realpath(file_path)
+    upload_root = os.path.realpath(app.config['UPLOAD_FOLDER'])
+    if not real_path.startswith(upload_root + os.sep):
+        return "Access denied", 403
+
+    if not os.path.exists(real_path):
+        return "File not found", 404
+
+    return send_file(real_path, as_attachment=True)
 
 # Handle simulation request
 @app.route('/simulate', methods=['POST'])
@@ -375,17 +378,37 @@ def simulate():
     os.makedirs(output_dir, exist_ok=True)
     
     # Start simulation in a separate thread
+    import threading
     thread = threading.Thread(
         target=generate_simulation_data,
-        args=(
-            n_compounds, inscutoff, mzrange, rtrange, ppm, sampleppm, mzdigit, 
-            scanrate, pwidth, noise_sd, baseline, baselinesd, snr, tailing_factor, 
-            unique, matrix, compound, rtime, tailingindex, matrixmz, seed, output_dir, session_id
+        kwargs=dict(
+            n_compounds=n_compounds,
+            inscutoff=inscutoff,
+            mzrange=mzrange,
+            rtrange=rtrange,
+            ppm=ppm,
+            sampleppm=sampleppm,
+            mzdigit=mzdigit,
+            noise_sd=noise_sd,
+            scanrate=scanrate,
+            pwidth=pwidth,
+            baseline=baseline,
+            baselinesd=baselinesd,
+            snr=snr,
+            tailing_factor=tailing_factor,
+            compound=compound,
+            rtime=rtime,
+            tailingindex=tailingindex,
+            seed=seed,
+            unique=unique,
+            matrix=matrix,
+            matrixmz=matrixmz,
+            output_dir=output_dir,
         )
     )
     thread.daemon = True
     thread.start()
-    
+
     return jsonify({'session_id': session_id})
 
 if __name__ == '__main__':
