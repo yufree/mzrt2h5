@@ -21,7 +21,31 @@ def write_mzml(filename, spectra_list):
     cvList = ET.SubElement(mzml, 'cvList', count="2")
     ET.SubElement(cvList, 'cv', id="MS", fullName="Proteomics Standards Initiative Mass Spectrometry Ontology", version="4.1.7", URI="https://raw.githubusercontent.com/HUPO-PSI/psi-ms-CV/master/psi-ms.obo")
     ET.SubElement(cvList, 'cv', id="UO", fullName="Unit Ontology", version="14:07:2009", URI="http://obo.cvs.sourceforge.net/*checkout*/obo/obo/ontology/phenotype/unit.obo")
-    
+
+    # --- Required mzML sections that DEFINE the IC1 / DP1 references used below. ---
+    # Without these the run/spectrumList point at undefined IDs, and strict parsers
+    # (ProteoWizard / mzR, the backend of xcms and masscube) abort with
+    # "Failed to resolve reference"; lenient parsers (pymzml, pyteomics) ignore it.
+    # Order matters per the mzML 1.1 schema: fileDescription, softwareList,
+    # instrumentConfigurationList, dataProcessingList, then run.
+    fileDescription = ET.SubElement(mzml, 'fileDescription')
+    fileContent = ET.SubElement(fileDescription, 'fileContent')
+    ET.SubElement(fileContent, 'cvParam', cvRef="MS", accession="MS:1000579", name="MS1 spectrum", value="")
+
+    softwareList = ET.SubElement(mzml, 'softwareList', count="1")
+    software = ET.SubElement(softwareList, 'software', id="mzrtsim", version="1.0")
+    ET.SubElement(software, 'cvParam', cvRef="MS", accession="MS:1000799", name="custom unreleased software tool", value="mzrtsim")
+
+    icList = ET.SubElement(mzml, 'instrumentConfigurationList', count="1")
+    ic = ET.SubElement(icList, 'instrumentConfiguration', id="IC1")
+    ET.SubElement(ic, 'cvParam', cvRef="MS", accession="MS:1000031", name="instrument model", value="")
+    ET.SubElement(ic, 'softwareRef', ref="mzrtsim")
+
+    dpList = ET.SubElement(mzml, 'dataProcessingList', count="1")
+    dp = ET.SubElement(dpList, 'dataProcessing', id="DP1")
+    pm = ET.SubElement(dp, 'processingMethod', order="0", softwareRef="mzrtsim")
+    ET.SubElement(pm, 'cvParam', cvRef="MS", accession="MS:1000544", name="Conversion to mzML", value="")
+
     run = ET.SubElement(mzml, 'run', id="run_1", defaultInstrumentConfigurationRef="IC1", startTimeStamp="2023-01-01T00:00:00Z")
     spectrumList = ET.SubElement(run, 'spectrumList', count=str(len(spectra_list)), defaultDataProcessingRef="DP1")
     
@@ -35,6 +59,9 @@ def write_mzml(filename, spectra_list):
         spectrum = ET.SubElement(spectrumList, 'spectrum', id=scan_id, index=str(i), defaultArrayLength=str(len(mz_array)))
         ET.SubElement(spectrum, 'cvParam', cvRef="MS", accession="MS:1000511", name="ms level", value=str(ms_level))
         ET.SubElement(spectrum, 'cvParam', cvRef="MS", accession="MS:1000579", name="MS1 spectrum", value="")
+        # Scan polarity (positive) — without it polarity-detecting tools (e.g. masscube's
+        # find_ms_info) return ion_mode=None and abort. mzrtsim models [M+H]+ positive mode.
+        ET.SubElement(spectrum, 'cvParam', cvRef="MS", accession="MS:1000130", name="positive scan", value="")
         
         scanList = ET.SubElement(spectrum, 'scanList', count="1")
         ET.SubElement(scanList, 'cvParam', cvRef="MS", accession="MS:1000795", name="no combination", value="")
