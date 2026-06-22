@@ -148,7 +148,11 @@ def _detect_metadata_format(file_path):
 def _load_metadata_csv(file_path, sample_id_col, separator=','):
     """Load metadata from a CSV or TSV file."""
     try:
-        df = pd.read_csv(file_path, sep=separator)
+        # keep_default_na=False: do not coerce string labels like 'NA'/'NaN'/'None'
+        # to floats — they are legitimate categorical covariate values (e.g. a
+        # 'side'/'stage' column where QC rows are labelled 'NA'). Coercion would
+        # turn a string column into mixed str+NaN and break HDF5 covariate writing.
+        df = pd.read_csv(file_path, sep=separator, keep_default_na=False)
     except FileNotFoundError:
         raise FileNotFoundError(f"Error: Metadata file not found at {file_path}")
     except Exception as e:
@@ -607,16 +611,24 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
         # Save all covariates and create mappings for string-based ones
         covariate_keys = list(written_covariates[0].keys()) if written_covariates else []
         all_mappings = {}
+        def _is_num(v):
+            return isinstance(v, (int, float, np.integer, np.floating)) and not (
+                isinstance(v, float) and np.isnan(v))
+
         for key in covariate_keys:
             values = [cov[key] for cov in written_covariates]
-            if isinstance(values[0], str):
-                # For string data, save as byte strings and create an integer mapping
-                f.create_dataset(key, data=np.array(values, dtype='S'))
-                unique_values = sorted(list(set(values)))
-                all_mappings[f"{key}_to_idx"] = {val: i for i, val in enumerate(unique_values)}
-            else:
-                # For numerical data, save directly
+            # Numeric only if EVERY value is a real number (no NaN, no strings).
+            # Otherwise store as byte strings — this covers string columns, mixed
+            # columns, and columns with empty/NaN cells. Avoids the h5py
+            # "No conversion path for dtype('<U..')" error on numpy unicode arrays.
+            if values and all(_is_num(v) for v in values):
                 f.create_dataset(key, data=np.array(values))
+            else:
+                svals = ['' if (isinstance(v, float) and np.isnan(v)) else str(v)
+                         for v in values]
+                f.create_dataset(key, data=np.array(svals, dtype='S'))
+                unique_values = sorted(set(svals))
+                all_mappings[f"{key}_to_idx"] = {val: i for i, val in enumerate(unique_values)}
 
         # Save the string-to-index mappings as a JSON string in attributes
         if all_mappings:
