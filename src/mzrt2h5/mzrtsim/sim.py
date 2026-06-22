@@ -255,7 +255,18 @@ def simmzml(db, name, n=100, inscutoff=0.05, mzrange=(30, 1500), rtrange=(0, 600
             ppm=5, sampleppm=5, mzdigit=5, noisesd=0.5, scanrate=0.2, pwidth=10,
             baseline=100, baselinesd=30, SNR=100, tailingfactor=1.2,
             compound=None, rtime=None, tailingindex=None, seed=42, unique=False,
-            matrix=False, matrixmz=None):
+            matrix=False, matrixmz=None,
+            noise_peaks=0, noise_peak_sigma=(3, 15), noise_peak_snr=(3, 40)):
+    """
+    noise_peaks: number of spurious NARROW peak-shaped noise events injected
+        into matrix (pure-noise) m/z channels. Real chemical noise is sharp &
+        isolated, not flat Gaussian — these reproduce it so that snr/shape_score
+        are tested against realistic non-analyte peaks (requires matrix=True).
+    noise_peak_sigma: (lo, hi) Gaussian sigma in SCANS for the spurious peaks
+        (e.g. scanrate=0.1s, sigma 3-15 => FWHM ~0.7-3.5s, narrower than real
+        ~10s analyte peaks → low width_eff but high snr/shape_score).
+    noise_peak_snr: (lo, hi) amplitude as a multiple of baseline.
+    """
     
     np.random.seed(seed)
     
@@ -480,7 +491,25 @@ def simmzml(db, name, n=100, inscutoff=0.05, mzrange=(30, 1500), rtrange=(0, 600
                 # Generate matrix intensity
                 # insmatrix <- matrix(rnorm(..., mean=baseline, sd=baselinesd)...)
                 ins_matrix = np.random.normal(baseline, baselinesd, (len(mzmatrix), n_scans))
-                
+
+                # Inject sharp, isolated, peak-shaped chemical noise into the
+                # pure-noise matrix channels (flat Gaussian alone is unrealistic
+                # and lets snr/shape_score look more discriminative than on real
+                # data — see CLAUDE.md "仿真→真数据迁移").
+                if noise_peaks > 0:
+                    nmz = len(mzmatrix)
+                    scan_ax = np.arange(n_scans)
+                    # Fixed-seed RNG => identical positions across samples
+                    # (persistent chemical noise that survives cross-sample sum,
+                    #  like real contaminant spikes); amplitude still varies/sample.
+                    prng = np.random.RandomState(20240501)
+                    for _ in range(int(noise_peaks)):
+                        ch = prng.randint(0, nmz)
+                        center = prng.uniform(0, n_scans)
+                        sig = prng.uniform(noise_peak_sigma[0], noise_peak_sigma[1])
+                        amp = baseline * np.random.uniform(noise_peak_snr[0], noise_peak_snr[1])
+                        ins_matrix[ch] += amp * np.exp(-0.5 * ((scan_ax - center) / sig) ** 2)
+
                 # Combine
                 # R: allins <- rbind(as.matrix(inspeak), insmatrix)
                 #    mz <- c(mzpeak, mzmatrix)

@@ -31,6 +31,9 @@ def generate_simulation_data(
     unique=False,
     matrix=False,
     matrixmz=None,
+    noise_peaks=0,
+    noise_peak_sigma=(3, 15),
+    noise_peak_snr=(3, 40),
     output_dir="simulation_output"
 ):
     """
@@ -58,6 +61,14 @@ def generate_simulation_data(
         unique (bool): Whether to use unique compounds
         matrix (bool): Whether to generate matrix
         matrixmz (list): Matrix m/z values
+        noise_peaks (int): Number of sharp, narrow, peak-shaped chemical-noise
+            events injected into matrix (pure-noise) m/z channels. Flat Gaussian
+            baseline alone is unrealistic; these reproduce real chemical noise so
+            shape/SNR-based scoring is tested against realistic non-analyte peaks.
+            Requires matrix=True. Default 0 (off).
+        noise_peak_sigma (tuple): (lo, hi) Gaussian sigma in SCANS for the
+            injected noise peaks (narrower than real analyte peaks).
+        noise_peak_snr (tuple): (lo, hi) noise-peak amplitude as a multiple of baseline.
         output_dir (str): Directory to save output files
         
     Returns:
@@ -92,7 +103,10 @@ def generate_simulation_data(
         'seed': seed,
         'unique': unique,
         'matrix': matrix,
-        'matrixmz': matrixmz
+        'matrixmz': matrixmz,
+        'noise_peaks': noise_peaks,
+        'noise_peak_sigma': noise_peak_sigma,
+        'noise_peak_snr': noise_peak_snr
     }
     
     # Generate unique filename without data_type

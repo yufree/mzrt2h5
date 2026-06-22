@@ -1,4 +1,8 @@
-__version__ = "0.1.9"
+# 0.2.0: CNN classification + interpretability moved to the `mzrtcnn` package
+# (model layer). mzrt2h5 is the data layer: mzML→HR H5, simulation, RT alignment,
+# and HR→LR rasterization (DynamicSparseH5Dataset, kept here — viz uses it and
+# it is a data-layer primitive). `from mzrtcnn import MzrtCNN, train_model, ...`
+__version__ = "0.2.0"
 
 from .processing import (load_metadata_from_file, load_metadata_from_mwtab, load_metadata_from_isatab,
                          process_mzml_to_sparse, save_dataset_as_sparse_h5, save_single_mzml_as_sparse_h5,
@@ -6,8 +10,6 @@ from .processing import (load_metadata_from_file, load_metadata_from_mwtab, load
 from .dataset import DynamicSparseH5Dataset
 from .visualization import plot_sample_image
 from .simulation import generate_simulation_data, simulate_background
-from .model import MzrtCNN
-from .trainer import train_model, predict, cross_validate
 from .alignment import compute_rt_corrections, apply_rt_corrections, align_rt
 
 __all__ = [
@@ -21,10 +23,6 @@ __all__ = [
     "plot_sample_image",
     "generate_simulation_data",
     "simulate_background",
-    "MzrtCNN",
-    "train_model",
-    "predict",
-    "cross_validate",
     "compute_rt_corrections",
     "apply_rt_corrections",
     "align_rt",

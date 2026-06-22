@@ -1,3 +1,17 @@
+"""mzrtsim — LC-MS data simulation.
+
+Python port of the mzrtsim R package. Cite the original method:
+
+    mzrtsim, Anal. Chem. 2025, 97 (32), 17309-17314.
+    DOI: 10.1021/acs.analchem.5c01213
+
+The simulator generates mzML with known composition, retention times, peak
+shapes, and noise — providing the ground truth that drives the suite's
+quantifiable validation (real metabolomics data has no ground truth). `simmzml`
+adds sharp chemical-noise channels (noise_peaks / noise_peak_sigma /
+noise_peak_snr, requires matrix=True) so peak-quality scoring is tested against
+realistic non-analyte peaks rather than only a flat Gaussian baseline.
+"""
 from .sim import simmzml
 from .parser import parse_msp
 import os

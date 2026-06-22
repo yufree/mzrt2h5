@@ -2,14 +2,15 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A Python package to convert mzML mass spectrometry files to HDF5 format for deep learning. Supports metadata from CSV, Metabolomics Workbench (mwTab), and MetaboLights (ISA-Tab). Version 0.1.9
+A Python package to convert mzML mass spectrometry files to HDF5 format for deep learning. Supports metadata from CSV, Metabolomics Workbench (mwTab), and MetaboLights (ISA-Tab). Version 0.2.0
 
 ## Design Philosophy
 
-`mzrt2h5` stores data at the **highest practical resolution** (default 0.0001 Da, 0.1 s) in a sparse HDF5 format. This high-resolution (HR) storage is the foundation for two downstream workflows in the `mzrt*` suite:
+`mzrt2h5` stores data at the **highest practical resolution** (default 0.0001 Da, 0.1 s) in a sparse HDF5 format. This high-resolution (HR) storage is the data foundation for the downstream packages of the `mzrt*` suite:
 
-- **`mzrtpeak`** — builds a low-resolution (LR) master image (typically 1 Da × 1 s bins) for fast CNN-based peak detection, then restores precise peak coordinates directly from the 0.0001 Da HR data (ppm-level mass accuracy).
-- **`mzrtgnn`** — consumes the resulting peak table for PMD-based metabolic network analysis.
+- **`mzrtpeak`** — streaming high-resolution peak picking (0.01 Da EICs + 1D `find_peaks`, no training), giving ppm-level mass accuracy.
+- **`mzrtcnn`** — classifies samples on a low-resolution image (downsampled here via `DynamicSparseH5Dataset`) and uses attribution to flag the regions driving a prediction; `mzrtpeak` then resolves the peaks inside those regions.
+- **`mzrtgnn`** — *(in development)* consumes the peak table for PMD-based metabolic network analysis.
 
 The sparse format means that increasing m/z resolution from 0.01 Da to 0.0001 Da adds no storage overhead beyond the actual non-zero data points already present in the mzML files.
 
@@ -210,25 +211,32 @@ train_dataset = DynamicSparseH5Dataset(
 
 ### CNN Classification
 
+> CNN classification and interpretability live in the separate **`mzrtcnn`**
+> package (the model layer). `mzrt2h5` is the data layer: it provides the
+> `DynamicSparseH5Dataset` that downsamples the HR H5 to a low-resolution image,
+> which `mzrtcnn` consumes for training and attribution.
+
 ```python
-from mzrt2h5 import train_model, predict, cross_validate
+from mzrtcnn import MzrtCNN, train_model, predict  # pip install mzrtcnn
 
-# Train a model
 result = train_model("output.h5", target_covariate="class", num_epochs=50)
-
-# Predict on new data
 preds = predict("new_data.h5", model_path="model.pth")
-
-# Cross-validation
-cv = cross_validate("output.h5", target_covariate="class", n_folds=5)
 ```
 
 ### RT Alignment
 
 ```python
-from mzrt2h5 import align_h5
+from mzrt2h5 import align_rt
 
-align_h5("output.h5", output_path="aligned.h5")
+# One-stop: compute QC-aware corrections and apply them.
+# Writes rt_aligned=True to the H5 attributes so downstream tools skip re-alignment.
+align_rt("output.h5", output_path="aligned.h5")
+
+# Or in two steps (e.g. to inspect/reuse corrections):
+from mzrt2h5 import compute_rt_corrections, apply_rt_corrections
+
+corrections = compute_rt_corrections("output.h5")
+apply_rt_corrections("output.h5", corrections, output_path="aligned.h5")
 ```
 
 ### Visualization
@@ -254,6 +262,13 @@ python app/app.py
 Open `http://127.0.0.1:5002` to access the web interface with real-time progress tracking.
 
 ## Changelog
+
+### Version 0.2.0
+- **Moved** the CNN classification model and trainer (`MzrtCNN`, `train_model`, `predict`, `cross_validate`) out of `mzrt2h5` into the dedicated **`mzrtcnn`** package (the model layer). `mzrt2h5` is now strictly the data layer: mzML→HR sparse H5, simulation, RT alignment, and HR→LR rasterization (`DynamicSparseH5Dataset`, kept here as a data-layer primitive used by both viz and `mzrtcnn`).
+- **Removed** `mzrt2h5.model` and `mzrt2h5.trainer`. Install `mzrtcnn` and use `from mzrtcnn import MzrtCNN, train_model, predict`.
+
+### Version 0.1.10
+- **Added** sharp chemical-noise simulation: `noise_peaks`, `noise_peak_sigma`, `noise_peak_snr` in `simmzml()` and `generate_simulation_data()`. Injects narrow, isolated, peak-shaped noise events into matrix (pure-noise) m/z channels (requires `matrix=True`). Flat Gaussian baseline alone is unrealistic and overstates how well shape/SNR features separate real peaks from noise; this reproduces real chemical noise so peak-quality scoring can be validated honestly.
 
 ### Version 0.1.9
 - **Added** metadata support for Metabolomics Workbench mwTab format (`load_metadata_from_mwtab`).
