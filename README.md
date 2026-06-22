@@ -10,7 +10,6 @@ A Python package to convert mzML mass spectrometry files to HDF5 format for deep
 
 - **`mzrtpeak`** — streaming high-resolution peak picking (0.01 Da EICs + 1D `find_peaks`, no training), giving ppm-level mass accuracy.
 - **`mzrtcnn`** — classifies samples on a low-resolution image (downsampled here via `DynamicSparseH5Dataset`) and uses attribution to flag the regions driving a prediction; `mzrtpeak` then resolves the peaks inside those regions.
-- **`mzrtgnn`** — *(in development)* consumes the peak table for PMD-based metabolic network analysis.
 
 The sparse format means that increasing m/z resolution from 0.01 Da to 0.0001 Da adds no storage overhead beyond the actual non-zero data points already present in the mzML files.
 
