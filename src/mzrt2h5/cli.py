@@ -1,6 +1,6 @@
 import click
 from .processing import save_dataset_as_sparse_h5, analyze_ms1_ms2_response
-from .visualization import plot_sample_image
+from .visualization import plot_sample_image, plot_ms1ms2_response
 
 @click.group()
 def main():
@@ -150,15 +150,19 @@ def align_rt(h5_path, metadata_csv, qc_name_col, qc_type_col, qc_type_val,
 @main.command()
 @click.argument('mzml_path', type=click.Path(exists=True, dir_okay=False, resolve_path=True))
 @click.argument('output_csv', type=click.Path(writable=True, resolve_path=True))
-def ms1ms2(mzml_path, output_csv):
+@click.option('--plot', type=click.Path(writable=True, resolve_path=True), default=None,
+              help='Also save a precursor-vs-product m/z plot (PNG) to this path.')
+def ms1ms2(mzml_path, output_csv, plot):
     """
     Analyzes a single mzML file to generate MS1 vs MS2 cumulative response (TIC) data.
-    
+
     MZML_PATH: Path to the input mzML file.
     OUTPUT_CSV: Path to save the output CSV file.
     """
     try:
         analyze_ms1_ms2_response(mzml_path, output_csv)
+        if plot:
+            plot_ms1ms2_response(output_csv, plot)
     except Exception as e:
         click.echo(click.style(f"An error occurred: {e}", fg='red'), err=True)
 

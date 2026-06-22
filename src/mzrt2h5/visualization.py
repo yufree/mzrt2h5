@@ -76,3 +76,60 @@ def plot_sample_image(
         plt.show()
 
     plt.close()
+
+
+def plot_ms1ms2_response(csv_path: str, output_path: str = None,
+                         cmap: str = 'viridis', figsize: tuple = (12, 10)):
+    """Plot precursor m/z vs product m/z from an MS1/MS2 analysis CSV.
+
+    The CSV is the output of :func:`mzrt2h5.processing.analyze_ms1_ms2_response`
+    (or ``mzrt2h5 ms1ms2``). Each MS2 precursor-product pair is a point, coloured
+    by log10 of the total cumulative TIC response (a proxy for elution progress);
+    a 1:1 reference line marks precursor = product.
+
+    Args:
+        csv_path (str): Path to the ms1ms2 analysis CSV.
+        output_path (str, optional): Path to save the plot (PNG). If None, displays.
+        cmap (str): Colormap.
+        figsize (tuple): Figure size (width, height).
+    """
+    import pandas as pd
+
+    df = pd.read_csv(csv_path)
+    needed = {'ms_level', 'precursor_mz', 'product_mz', 'cum_ms1', 'cum_ms2'}
+    missing = needed - set(df.columns)
+    if missing:
+        print(f"CSV is missing expected columns {missing}; was it produced by "
+              f"analyze_ms1_ms2_response / `mzrt2h5 ms1ms2`?")
+        return
+
+    plot_df = df[df['ms_level'] == 2].dropna(subset=['precursor_mz', 'product_mz']).copy()
+    if plot_df.empty:
+        print("No MS2 precursor-product pairs found in the CSV.")
+        return
+
+    plot_df['total_cum'] = plot_df['cum_ms1'] + plot_df['cum_ms2']
+    plot_df['log_total_cum'] = np.log10(plot_df['total_cum'].replace(0, 1))
+
+    plt.figure(figsize=figsize)
+    sc = plt.scatter(plot_df['precursor_mz'], plot_df['product_mz'],
+                     c=plot_df['log_total_cum'], cmap=cmap, s=10, alpha=0.6, edgecolor='none')
+    plt.colorbar(sc, label='log10(total cumulative intensity)')
+    plt.xlabel('Precursor m/z (MS1)')
+    plt.ylabel('Product m/z (MS2)')
+    plt.title('Precursor vs product m/z (coloured by log10 cumulative response)')
+    plt.grid(True, linestyle='--', alpha=0.4)
+
+    lo = float(min(plot_df['precursor_mz'].min(), plot_df['product_mz'].min()))
+    hi = float(max(plot_df['precursor_mz'].max(), plot_df['product_mz'].max()))
+    plt.plot([lo, hi], [lo, hi], 'r--', alpha=0.5, label='precursor = product')
+    plt.legend()
+    plt.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"Plot saved to {output_path}")
+    else:
+        plt.show()
+
+    plt.close()

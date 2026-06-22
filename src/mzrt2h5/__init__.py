@@ -8,7 +8,7 @@ from .processing import (load_metadata_from_file, load_metadata_from_mwtab, load
                          process_mzml_to_sparse, save_dataset_as_sparse_h5, save_single_mzml_as_sparse_h5,
                          repack_h5)
 from .dataset import DynamicSparseH5Dataset
-from .visualization import plot_sample_image
+from .visualization import plot_sample_image, plot_ms1ms2_response
 from .simulation import generate_simulation_data, simulate_background
 from .alignment import compute_rt_corrections, apply_rt_corrections, align_rt
 
@@ -21,6 +21,7 @@ __all__ = [
     "save_single_mzml_as_sparse_h5",
     "DynamicSparseH5Dataset",
     "plot_sample_image",
+    "plot_ms1ms2_response",
     "generate_simulation_data",
     "simulate_background",
     "compute_rt_corrections",
