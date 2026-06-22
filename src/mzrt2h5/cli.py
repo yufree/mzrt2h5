@@ -18,7 +18,11 @@ def main():
 @click.option('--separator', default=',', help='Separator for CSV/TSV metadata files.')
 @click.option('--mz-range', type=(float, float), help='Fixed (min, max) m/z range.')
 @click.option('--rt-range', type=(float, float), help='Fixed (min, max) RT range.')
-def process(folder, save_path, rt_precision, mz_precision, metadata_csv_path, metadata_format, sample_id_col, separator, mz_range, rt_range):
+@click.option('--min-rel-intensity', type=float, default=None,
+              help='Keep only points >= this fraction of each scan base peak (e.g. 0.001). '
+                   'Recommended for profile-mode data (e.g. QTOF) to denoise and bound HDF5 size; '
+                   'leave unset for centroided data.')
+def process(folder, save_path, rt_precision, mz_precision, metadata_csv_path, metadata_format, sample_id_col, separator, mz_range, rt_range, min_rel_intensity):
     """Processes a folder of mzML files and saves them as a single, consolidated sparse HDF5 file."""
 
     # Click returns empty tuples for non-provided tuple options, convert to None
@@ -40,7 +44,8 @@ def process(folder, save_path, rt_precision, mz_precision, metadata_csv_path, me
             separator=separator,
             format=fmt,
             mz_range=mz_range,
-            rt_range=rt_range
+            rt_range=rt_range,
+            min_rel_intensity=min_rel_intensity
         )
         click.echo(click.style(f"Successfully created HDF5 file at: {save_path}", fg='green'))
     except Exception as e:
