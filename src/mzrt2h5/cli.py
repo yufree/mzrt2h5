@@ -1,11 +1,102 @@
 import click
 from .processing import save_dataset_as_sparse_h5, analyze_ms1_ms2_response
 from .visualization import plot_sample_image, plot_ms1ms2_response
+from .acquisition import download_study, download_workbench_study, build_h5_from_download
 
 @click.group()
 def main():
     """A command-line tool for processing mzML files and visualizing mass spec data."""
     pass
+
+
+@main.command()
+@click.argument('study_id', type=str)
+@click.argument('dest', type=click.Path(file_okay=False, resolve_path=True))
+@click.option('--pol', 'polarity', type=click.Choice(['all', 'pos', 'neg']),
+              default='all', show_default=True,
+              help='[MetaboLights] Polarity subset (filtered by filename substring).')
+@click.option('--ext', 'exts', multiple=True,
+              help='[MetaboLights] Spectra extension(s) to fetch. Default .mzML. '
+                   'Use e.g. "--ext .raw.zip" for Waters vendor-raw studies (MTBLS364).')
+@click.option('--subpath', default='FILES', show_default=True,
+              help='[MetaboLights] Study subpath to walk (e.g. FILES/RAW_FILES/HILIC).')
+@click.option('--unzip', is_flag=True, default=False,
+              help='[MetaboLights] Unzip *.zip archives in place (for vendor .raw.zip).')
+@click.option('--section', type=click.Choice(
+                  ['mzml_centroid', 'mzml_profile', 'raw', 'metadata', 'all']),
+              default='mzml_centroid', show_default=True,
+              help='[Workbench] Which .7z bundle to fetch.')
+@click.option('--no-extract', 'no_extract', is_flag=True, default=False,
+              help='[Workbench] Keep the .7z archive instead of extracting it.')
+@click.option('--h5', 'h5_path', type=click.Path(writable=True, resolve_path=True),
+              default=None,
+              help='Turnkey: after download, build this HDF5 store from the mzML '
+                   '(auto-picks ISA-Tab/mwTab metadata). Skipped if only vendor raw.')
+@click.option('--rt-precision', default=0.1, type=float, show_default=True,
+              help='[--h5] RT bin size (seconds).')
+@click.option('--mz-precision', default=0.0001, type=float, show_default=True,
+              help='[--h5] m/z bin size (Da).')
+@click.option('--min-rel-intensity', type=float, default=None,
+              help='[--h5] Drop points below this fraction of each scan base peak '
+                   '(profile-mode denoising, e.g. 0.001).')
+def download(study_id, dest, polarity, exts, subpath, unzip, section, no_extract,
+             h5_path, rt_precision, mz_precision, min_rel_intensity):
+    """Download a public study (spectra + metadata) into DEST.
+
+    The repository is auto-detected from the accession prefix:
+
+    \b
+      MTBLS* -> MetaboLights (recursive EBI FTP walk; --pol/--ext/--subpath/--unzip)
+      ST*     -> Metabolomics Workbench (.7z bundles; --section/--no-extract)
+
+    With --h5 it also builds the HDF5 store in one step (when the download yields
+    mzML; vendor raw needs an msconvert step first). Otherwise build later with
+    `mzrt2h5 process DEST out.h5 --metadata-csv-path ...`.
+
+    Examples:
+
+    \b
+      mzrt2h5 download MTBLS266 ./MTBLS266 --pol pos --h5 mtbls266.h5
+      mzrt2h5 download MTBLS364 ./MTBLS364 --ext .raw.zip --unzip
+      mzrt2h5 download ST004504 ./ST004504 --section mzml_centroid --h5 st004504.h5
+    """
+    sid = study_id.upper()
+    try:
+        if sid.startswith('MTBLS'):
+            exts = exts if exts else ('.mzML',)
+            res = download_study(study_id, dest, polarity=polarity, exts=exts,
+                                 subpath=subpath, unzip=unzip)
+            click.echo(click.style(
+                f"Downloaded {res['n_present']}/{res['n_total']} files "
+                f"(+{res['isatab_files']} metadata) to {res['dest']}", fg='green'))
+        elif sid.startswith('ST'):
+            res = download_workbench_study(study_id, dest, section=section,
+                                          extract=not no_extract)
+            click.echo(click.style(
+                f"Downloaded {len(res['downloaded'])} bundle(s) "
+                f"(extracted={res['extracted']}) to {res['dest']}", fg='green'))
+        else:
+            raise click.BadParameter(
+                f"Unrecognized accession '{study_id}'. Expected MTBLS* "
+                f"(MetaboLights) or ST* (Metabolomics Workbench).")
+
+        if h5_path:
+            try:
+                b = build_h5_from_download(
+                    study_id, dest, h5_path,
+                    rt_precision=rt_precision, mz_precision=mz_precision,
+                    min_rel_intensity=min_rel_intensity)
+                click.echo(click.style(
+                    f"Built HDF5 from {b['n_mzml']} mzML ({b['metadata_format']}): "
+                    f"{b['h5_path']}", fg='green'))
+            except RuntimeError as e:
+                click.echo(click.style(f"Download done; HDF5 build skipped: {e}",
+                                       fg='yellow'))
+    except click.ClickException:
+        raise
+    except Exception as e:
+        click.echo(click.style(f"Download failed: {e}", fg='red'), err=True)
+        raise SystemExit(1)
 
 @main.command()
 @click.argument('folder', type=click.Path(exists=True, file_okay=False, resolve_path=True))

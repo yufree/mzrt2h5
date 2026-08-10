@@ -1,4 +1,5 @@
 import os
+import re
 import numpy as np
 import pandas as pd
 import pymzml
@@ -184,10 +185,17 @@ def load_metadata_from_mwtab(file_path):
 
     records = {}
     in_ssf = False
+    ion_mode = None
 
     with open(file_path, 'r', encoding='utf-8') as f:
         for line in f:
             line = line.rstrip('\n\r')
+
+            # Capture ion mode from MS section for polarity-aware file matching
+            if line.startswith('MS:ION_MODE'):
+                parts = line.split('\t')
+                if len(parts) > 1:
+                    ion_mode = parts[1].strip().lower()
 
             if line.startswith('SUBJECT_SAMPLE_FACTORS'):
                 in_ssf = True
@@ -233,17 +241,30 @@ def load_metadata_from_mwtab(file_path):
 
     # Re-key by RAW_FILE_NAME (without extension) when available,
     # so entries match mzML filenames on disk. Fall back to sample_id.
+    # The key may be "RAW_FILE_NAME" or "RAW_FILE_NAME(...)" (e.g. "RAW_FILE_NAME(Raw file name-1)")
     metadata = {}
     for sample_id, record in records.items():
-        raw_file = record.pop('RAW_FILE_NAME', None)
+        raw_file = None
+        raw_key = None
+        for k in list(record.keys()):
+            if k.startswith('RAW_FILE_NAME'):
+                raw_file = record.pop(k)
+                raw_key = k
+                break
+        base = os.path.basename(raw_file) if raw_file else sample_id
+        # Strip archive + vendor extensions so the key matches the converted mzML
+        # stem. Handles MW SUBJECT_SAMPLE_FACTORS ids that carry the vendor
+        # ".raw" suffix (Thermo) and double extensions like ".raw.zip"; a single
+        # os.path.splitext would leave a dangling ".raw".
+        file_key = re.sub(r'\.(zip|gz|tar)$', '', base, flags=re.I)
+        file_key = re.sub(r'\.(raw|d|wiff|mzML|mzXML|cdf)$', '', file_key, flags=re.I)
         if raw_file:
-            file_key = os.path.splitext(os.path.basename(raw_file))[0]
             record['sample_id'] = sample_id
-        else:
-            file_key = sample_id
+        record['_ion_mode'] = ion_mode  # internal key for polarity matching
         metadata[file_key] = record
 
-    print(f"Loaded {len(metadata)} samples from mwTab file.")
+    print(f"Loaded {len(metadata)} samples from mwTab file"
+          f" ({ion_mode or 'unknown'} ion mode).")
     return metadata
 
 
@@ -284,9 +305,19 @@ def load_metadata_from_isatab(file_path):
     if s_files:
         study_df = pd.read_csv(os.path.join(search_dir, s_files[0]), sep='\t')
 
+    # MERGE all assay files: a study can have several (e.g. MTBLS364 has
+    # HILIC_NEG/POS + RPLC_NEG/POS), each mapping its own raw files to samples.
+    # Reading only a_files[0] would drop 3/4 of the runs.
     assay_df = None
     if a_files:
-        assay_df = pd.read_csv(os.path.join(search_dir, a_files[0]), sep='\t')
+        dfs = []
+        for af in a_files:
+            try:
+                dfs.append(pd.read_csv(os.path.join(search_dir, af), sep='\t'))
+            except Exception as e:
+                print(f"Warning: could not read assay file {af}: {e}")
+        if dfs:
+            assay_df = pd.concat(dfs, ignore_index=True)
 
     # Extract useful columns from study file
     study_meta = {}
@@ -306,41 +337,61 @@ def load_metadata_from_isatab(file_path):
                     record[clean_col] = str(val)
             study_meta[sample_name] = record
 
-    # Build mapping from sample name to raw filename using assay file
-    sample_to_file = {}
+    # Build (sample_name, raw_file) pairs from the assay file(s). A LIST (not a
+    # dict keyed by sample) so one sample run on multiple assays keeps a separate
+    # raw file per run (e.g. MTBLS364 sample28 -> HILIC_POS_sample28.raw.zip AND
+    # LipidPOS_SAMPLE28.raw.zip).
+    sample_file_pairs = []
     if assay_df is not None:
-        raw_col = None
-        for c in assay_df.columns:
-            if 'raw' in c.lower() and 'file' in c.lower():
-                raw_col = c
-                break
-        if raw_col and 'Sample Name' in assay_df.columns:
-            for _, row in assay_df.iterrows():
-                sample_name = str(row['Sample Name'])
-                raw_file = str(row[raw_col]) if pd.notna(row[raw_col]) else ''
-                if raw_file:
-                    sample_to_file[sample_name] = raw_file
-
-            # Also extract assay-level metadata
+        # Collect every column that may carry the spectral data filename.
+        # ISA-Tab legitimately stores it under either "Raw Spectral Data File"
+        # (vendor/raw) or "Derived Spectral Data File" (post-processing, e.g.
+        # MTBLS1124 ships only centroided mzML as Derived). Using only the Raw
+        # column leaves the latter studies with no file mapping at all.
+        raw_cols = [c for c in assay_df.columns
+                    if 'file' in c.lower()
+                    and ('raw' in c.lower() or 'spectral data' in c.lower()
+                         or 'derived' in c.lower())]
+        # Prefer "Raw ..." first when present, then "Derived ...".
+        raw_cols.sort(key=lambda c: (0 if 'raw' in c.lower() else 1, c))
+        if raw_cols and 'Sample Name' in assay_df.columns:
             assay_cols = [c for c in assay_df.columns
                           if c.startswith('Parameter Value[') or c == 'MS Assay Name']
-            if assay_cols:
-                for _, row in assay_df.iterrows():
-                    sample_name = str(row['Sample Name'])
-                    if sample_name in study_meta:
-                        for col in assay_cols:
-                            val = row[col]
-                            if pd.notna(val):
-                                clean_col = col.replace('Parameter Value[', '').rstrip(']')
-                                study_meta[sample_name][clean_col] = str(val)
+            ms_data_ext_re = re.compile(
+                r'\.(mzml|mzxml|cdf|raw|wiff|d)(\.(zip|gz|tar))?$', re.I)
+            for _, row in assay_df.iterrows():
+                sample_name = str(row['Sample Name'])
+                candidates = [str(row[c]) for c in raw_cols
+                              if pd.notna(row[c]) and str(row[c]).strip()]
+                raw_file = ''
+                for cand in candidates:
+                    if ms_data_ext_re.search(cand.strip()):
+                        raw_file = cand
+                        break
+                if not raw_file and candidates:
+                    raw_file = candidates[0]
+                if raw_file:
+                    sample_file_pairs.append((sample_name, raw_file))
+                # assay-level params (per sample, best-effort)
+                if assay_cols and sample_name in study_meta:
+                    for col in assay_cols:
+                        val = row[col]
+                        if pd.notna(val):
+                            clean_col = col.replace('Parameter Value[', '').rstrip(']')
+                            study_meta[sample_name][clean_col] = str(val)
 
     # Re-key by mzML filename (without extension) for matching
     metadata = {}
-    if sample_to_file:
-        for sample_name, raw_file in sample_to_file.items():
+    if sample_file_pairs:
+        for sample_name, raw_file in sample_file_pairs:
             file_key = os.path.basename(raw_file)
-            file_key = os.path.splitext(file_key)[0]
-            record = study_meta.get(sample_name, {})
+            # Strip archive + vendor extensions so the key matches the converted
+            # mzML stem. Handles double extensions like ".raw.zip" (Waters,
+            # MTBLS364), ".d.zip" (Bruker), ".wiff" (Sciex) etc., which a single
+            # os.path.splitext would leave a dangling ".raw"/".d" on.
+            file_key = re.sub(r'\.(zip|gz|tar)$', '', file_key, flags=re.I)
+            file_key = re.sub(r'\.(raw|d|wiff|mzML|mzXML|cdf)$', '', file_key, flags=re.I)
+            record = dict(study_meta.get(sample_name, {}))   # copy: each file its own
             record['sample_name'] = sample_name
             metadata[file_key] = record
     else:
@@ -497,14 +548,51 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
     # Find all .mzML files and match them with loaded metadata
     all_mzml_files = sorted([os.path.join(root, f) for root, _, fs in os.walk(folder) for f in fs if f.endswith('.mzML')])
     
+    # Determine the ion mode from metadata (mwTab stores it as _ion_mode per record).
+    # All records share the same value; grab it from the first one.
+    meta_ion_mode = None
+    for rec in metadata_lookup.values():
+        meta_ion_mode = rec.get('_ion_mode')
+        break
+
+    meta_keys = list(metadata_lookup.keys())
+    
     for f_path in all_mzml_files:
         # Assumes filename (without extension) is the sample ID
         sample_id = os.path.basename(f_path).replace('.mzML', '')
+
+        # Determine file polarity from filename (e.g. "Project2_POS_..." / "Project2_Neg_...")
+        file_ion_mode = None
+        if re.search(r'[_\-](POS)[_\-]', sample_id, re.I):
+            file_ion_mode = 'positive'
+        elif re.search(r'[_\-](NEG|Neg)[_\-]', sample_id, re.I):
+            file_ion_mode = 'negative'
+
+        # If metadata has a known ion mode and the file has a detectable polarity,
+        # skip mismatches so POS metadata doesn't match NEG files (and vice versa).
+        if meta_ion_mode and file_ion_mode and meta_ion_mode != file_ion_mode:
+            continue
+        
+        # 1) Try exact match first
         if sample_id in metadata_lookup:
             files_to_process.append(f_path)
             all_covariates.append(metadata_lookup[sample_id])
-        else:
-            print(f"Warning: Metadata for file {f_path} not found. Skipping this file.")
+            continue
+        
+        # 2) Try substring match: check if any metadata key is contained in the filename
+        matched = False
+        for key in meta_keys:
+            if key in sample_id:
+                files_to_process.append(f_path)
+                all_covariates.append(metadata_lookup[key])
+                matched = True
+                break
+        
+        if not matched:
+            # Only warn if polarity was compatible (or unknown) — otherwise it was
+            # deliberately skipped and lab-control files have no metadata anyway.
+            if not meta_ion_mode or not file_ion_mode or meta_ion_mode == file_ion_mode:
+                print(f"Warning: Metadata for file {f_path} not found. Skipping this file.")
 
     if not files_to_process:
         raise ValueError("No matching mzML files found for the metadata provided.")
@@ -608,27 +696,56 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
         # Save the final shape of the 2D matrices
         f.create_dataset('shape', data=final_shape)
 
-        # Save all covariates and create mappings for string-based ones
-        covariate_keys = list(written_covariates[0].keys()) if written_covariates else []
+        # Save all covariates and create mappings for string-based ones.
+        # Use the UNION of keys across all records, not just the first: records
+        # can have different key sets (e.g. QC/blank samples lack study Factor
+        # Values like 'smoking status' that biological samples carry — and the
+        # sorted-first file is often a QC, so keying off [0] would silently drop
+        # them). Missing values are filled with '' (-> stored as a string column).
+        covariate_keys = []
+        _seen = set()
+        for cov in written_covariates:
+            for k in cov.keys():
+                if k.startswith('_'):  # skip internal keys like _ion_mode
+                    continue
+                if k not in _seen:
+                    _seen.add(k); covariate_keys.append(k)
         all_mappings = {}
         def _is_num(v):
             return isinstance(v, (int, float, np.integer, np.floating)) and not (
                 isinstance(v, float) and np.isnan(v))
 
+        # Dataset names created outside this loop. A covariate whose sanitized
+        # name collides with one of these — or with an earlier covariate that
+        # sanitized to the same name — would raise "name already exists" (e.g.
+        # ST002940's mwTab carries its own 'sample_id' field, clashing with the
+        # filename-derived sample_id written below). Prefix on collision.
+        _reserved = {'data', 'rt_indices', 'mz_indices', 'sample_indices',
+                     'shape', 'sample_id'}
+        _used = set()
         for key in covariate_keys:
-            values = [cov[key] for cov in written_covariates]
+            # '/' in a covariate name (e.g. 'Scan m/z range') is an HDF5 path
+            # separator → would create a stray GROUP that breaks the dataset
+            # loader. Sanitize to a flat dataset name.
+            ds_key = key.replace('/', '_')
+            while ds_key in _reserved or ds_key in _used:
+                ds_key = f"cov_{ds_key}"
+            _used.add(ds_key)
+            values = [cov.get(key, '') for cov in written_covariates]
             # Numeric only if EVERY value is a real number (no NaN, no strings).
             # Otherwise store as byte strings — this covers string columns, mixed
             # columns, and columns with empty/NaN cells. Avoids the h5py
             # "No conversion path for dtype('<U..')" error on numpy unicode arrays.
             if values and all(_is_num(v) for v in values):
-                f.create_dataset(key, data=np.array(values))
+                f.create_dataset(ds_key, data=np.array(values))
             else:
                 svals = ['' if (isinstance(v, float) and np.isnan(v)) else str(v)
                          for v in values]
-                f.create_dataset(key, data=np.array(svals, dtype='S'))
+                # encode UTF-8 (not numpy 'S' on str, which is ASCII and dies on
+                # e.g. 'µl' in ISA-Tab units); the reader decodes UTF-8.
+                f.create_dataset(ds_key, data=np.array([s.encode('utf-8') for s in svals], dtype='S'))
                 unique_values = sorted(set(svals))
-                all_mappings[f"{key}_to_idx"] = {val: i for i, val in enumerate(unique_values)}
+                all_mappings[f"{ds_key}_to_idx"] = {val: i for i, val in enumerate(unique_values)}
 
         # Save the string-to-index mappings as a JSON string in attributes
         if all_mappings:
@@ -636,7 +753,7 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
 
         # Store sample IDs (filenames without extension) for downstream workflows
         sample_ids = [os.path.basename(fp).replace('.mzML', '') for fp in written_files]
-        f.create_dataset('sample_id', data=np.array(sample_ids, dtype='S'))
+        f.create_dataset('sample_id', data=np.array([s.encode('utf-8') for s in sample_ids], dtype='S'))
 
         # Save processing parameters and data ranges as attributes
         f.attrs['rt_precision'] = rt_precision
@@ -708,7 +825,7 @@ def save_single_mzml_as_sparse_h5(mzml_file_path, save_path, rt_precision, mz_pr
             f.create_dataset('rt_indices', data=rt_indices, **_h5_kw)
             f.create_dataset('mz_indices', data=mz_indices, **_h5_kw)
             f.create_dataset('sample_indices', data=np.zeros(len(intensities), dtype=np.int32), **_h5_kw)
-            f.create_dataset('sample_name', data=np.array([sample_name], dtype='S'))
+            f.create_dataset('sample_name', data=np.array([sample_name.encode('utf-8')], dtype='S'))
             f.create_dataset('shape', data=final_shape)
 
             f.attrs['rt_precision'] = rt_precision

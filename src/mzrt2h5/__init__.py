@@ -11,6 +11,9 @@ from .dataset import DynamicSparseH5Dataset
 from .visualization import plot_sample_image, plot_ms1ms2_response
 from .simulation import generate_simulation_data, simulate_background
 from .alignment import compute_rt_corrections, apply_rt_corrections, align_rt
+from .acquisition import (download_study, list_study_spectra,
+                          download_workbench_study, list_workbench_bundles,
+                          fetch_workbench_mwtab, build_h5_from_download)
 
 __all__ = [
     "load_metadata_from_file",
@@ -28,4 +31,10 @@ __all__ = [
     "apply_rt_corrections",
     "align_rt",
     "repack_h5",
+    "download_study",
+    "list_study_spectra",
+    "download_workbench_study",
+    "list_workbench_bundles",
+    "fetch_workbench_mwtab",
+    "build_h5_from_download",
 ]
