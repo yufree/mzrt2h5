@@ -48,15 +48,14 @@ def test_noise_peaks_injection(tmp_path):
     # Same seed + same compounds => the only difference is the injected noise,
     # which adds positive signal, so total ion intensity must strictly increase.
     # The compound-peak ground truth (CSV) is unaffected.
-    import pyteomics.mzml as pmz
+    import pymzml
 
     def total_intensity(path):
         s = 0.0
-        with pmz.read(path) as reader:
-            for spec in reader:
-                ints = spec.get('intensity array')
-                if ints is not None and len(ints):
-                    s += float(ints.sum())
+        for spec in pymzml.run.Reader(path):
+            ints = spec.i
+            if ints is not None and len(ints):
+                s += float(ints.sum())
         return s
 
     assert total_intensity(mz1) > total_intensity(mz0)

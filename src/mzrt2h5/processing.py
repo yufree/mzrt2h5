@@ -439,7 +439,10 @@ def process_mzml_to_sparse(file, rt_precision, mz_precision, mz_range=None, rt_r
                 spectra_data.append({
                     "rt": spectrum.scan_time_in_minutes() * 60, # Convert RT to seconds
                     "mz": mz,
-                    "intensity": intensities.astype(np.int32)
+                    # int64: Orbitrap base-peak intensities routinely exceed int32's
+                    # ~2.1e9 ceiling (e.g. solvent/water clusters), which silently
+                    # overflows to garbage on cast.
+                    "intensity": intensities.astype(np.int64)
                 })
 
     # If the file is empty or has no MS1 scans, return an empty matrix
@@ -579,16 +582,21 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
             all_covariates.append(metadata_lookup[sample_id])
             continue
         
-        # 2) Try substring match: check if any metadata key is contained in the filename
-        matched = False
-        for key in meta_keys:
-            if key in sample_id:
-                files_to_process.append(f_path)
-                all_covariates.append(metadata_lookup[key])
-                matched = True
-                break
-        
-        if not matched:
+        # 2) Try substring match: check if any metadata key is contained in the
+        # filename. A key is only a candidate at occurrences not immediately
+        # followed by another digit — otherwise "Term-1" would silently match
+        # "Term-10"/"Term-19" (a real collision seen on numeric-suffix sample
+        # IDs, e.g. ST003616's "P-Batch-1-Term-1" vs "...-Term-10").
+        candidates = [key for key in meta_keys
+                      if re.search(re.escape(key) + r'(?!\d)', sample_id)]
+
+        if len(candidates) == 1:
+            files_to_process.append(f_path)
+            all_covariates.append(metadata_lookup[candidates[0]])
+        elif len(candidates) > 1:
+            print(f"Warning: Ambiguous metadata match for file {f_path} "
+                  f"(candidates: {candidates}). Skipping this file.")
+        else:
             # Only warn if polarity was compatible (or unknown) — otherwise it was
             # deliberately skipped and lab-control files have no metadata anyway.
             if not meta_ion_mode or not file_ion_mode or meta_ion_mode == file_ion_mode:
@@ -627,7 +635,10 @@ def save_dataset_as_sparse_h5(folder, save_path, rt_precision, mz_precision,
         # lzf decompresses 5–10× faster than gzip; chunk size of 100 000 avoids
         # the ~50 000 decompress calls that the default chunk size of 1024 would need.
         _h5_kw = dict(dtype=np.int32, compression='lzf', chunks=(100000,))
-        dset_data = f.create_dataset('data', shape=(0,), maxshape=(None,), **_h5_kw)
+        # data (intensity) needs int64: Orbitrap base peaks routinely exceed int32's
+        # ~2.1e9 ceiling. rt/mz/sample are bin *counts*, safely within int32.
+        _data_kw = dict(dtype=np.int64, compression='lzf', chunks=(100000,))
+        dset_data = f.create_dataset('data', shape=(0,), maxshape=(None,), **_data_kw)
         dset_rt = f.create_dataset('rt_indices', shape=(0,), maxshape=(None,), **_h5_kw)
         dset_mz = f.create_dataset('mz_indices', shape=(0,), maxshape=(None,), **_h5_kw)
         dset_sample = f.create_dataset('sample_indices', shape=(0,), maxshape=(None,), **_h5_kw)
